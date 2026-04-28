@@ -5,7 +5,7 @@ with source as (
 ),
 
 renamed as (
-    select
+    select THIS IS A SYNTAX ERROR
         -- Primary key
         id as account_id,
 
