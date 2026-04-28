@@ -46,6 +46,9 @@ models:
       - name: owner_id
         description: Foreign key to the user who owns this account relationship
         data_type: string
+        tests:
+          - not_null
+          - unique
 
       - name: created_date
         description: When the account record was first created in Salesforce

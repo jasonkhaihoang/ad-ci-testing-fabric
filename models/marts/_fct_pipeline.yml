@@ -48,6 +48,8 @@ models:
         description: Foreign key to dim_account (may be null for orphaned opportunities)
         data_type: string
         tests:
+          - not_null
+          - unique
           - relationships:
               to: ref('dim_account')
               field: account_id
@@ -64,6 +66,8 @@ models:
         description: Foreign key to dim_user representing the sales rep who owns this opportunity
         data_type: string
         tests:
+          - not_null
+          - unique
           - relationships:
               to: ref('dim_user')
               field: user_id
