@@ -417,7 +417,6 @@ jobs:
           def passed_field_ok(r):
               return isinstance(r, dict) and bool(r.get("passed"))
 
-          # dbt scorecard is advisory — not a blocking gate check
           checks = [
               ("ruff", ruff_ok, "reports/ruff.json"),
               ("sqlfluff", sqlfluff_ok, "reports/sqlfluff.json"),
@@ -425,6 +424,7 @@ jobs:
               ("dbt compile", passed_field_ok, "reports/dbt_compile.json"),
               ("dbt build --empty", passed_field_ok, "reports/dbt_build_empty.json"),
               ("schema gate", passed_field_ok, "reports/schema_gate.json"),
+              ("dbt scorecard", passed_field_ok, "reports/scorecard.json"),
           ]
 
           failures = []

@@ -437,8 +437,7 @@ def build_details_comment(
             compile_result or {}, build_empty_result or {}, schema_gate or {}
         )
 
-    # scorecard is advisory — excluded from the blocking gate signal
-    overall_passed = ruff_passed and sql_passed and gl_passed and gate_0_passed
+    overall_passed = ruff_passed and sql_passed and gl_passed and sc_passed and gate_0_passed
     overall_icon = icon(overall_passed)
 
     def _status(report: dict | None) -> str:
