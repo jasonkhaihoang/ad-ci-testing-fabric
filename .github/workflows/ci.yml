@@ -296,12 +296,11 @@ jobs:
           DBT_JOB_NAME: ci-parse
         run: |
           dbt deps --quiet 2>/dev/null || true
-          dbt parse --profiles-dir .github/profiles --target dbt_quality --quiet 2>/dev/null || true
+          dbt parse --profiles-dir .github/profiles --target dbt_quality --exclude package:elementary --quiet 2>/dev/null || true
           python3 ${{ env.SCRIPTS }}/scorecard.py \
             --manifest target/manifest.json \
             --agents-md AGENTS.md \
             > reports/scorecard.json
-
 
       - name: dbt compile
         continue-on-error: true
@@ -312,12 +311,9 @@ jobs:
           LAKEHOUSE_ID: dummy
           SCHEMA: dummy
         run: |
-          if dbt compile --profiles-dir .github/profiles --target dbt_quality --exclude package:elementary; then
-            echo '{"passed": true}' > reports/dbt_compile.json
-          else
-            echo '{"passed": false}' > reports/dbt_compile.json
-            exit 1
-          fi
+          python3 ${{ env.SCRIPTS }}/dbt_error_report.py reports/dbt_compile.json \
+            compile --profiles-dir .github/profiles --target dbt_quality \
+            --exclude package:elementary --quiet 2>/dev/null || true
 
       - name: dbt build --empty
         continue-on-error: true
@@ -328,12 +324,9 @@ jobs:
           LAKEHOUSE_ID: dummy
           SCHEMA: dummy
         run: |
-          if dbt build --empty --profiles-dir .github/profiles --target dbt_quality --exclude package:elementary; then
-            echo '{"passed": true}' > reports/dbt_build_empty.json
-          else
-            echo '{"passed": false}' > reports/dbt_build_empty.json
-            exit 1
-          fi
+          python3 ${{ env.SCRIPTS }}/dbt_error_report.py reports/dbt_build_empty.json \
+            build --empty --profiles-dir .github/profiles --target dbt_quality \
+            --exclude package:elementary --quiet 2>/dev/null || true
 
       - name: Schema gate
         if: always()
@@ -346,7 +339,6 @@ jobs:
             --base-sha "${{ github.event.pull_request.base.sha }}" \
             --head-sha "${{ github.event.pull_request.head.sha }}" \
             --output reports/schema_gate.json
-
 
       - name: Upload reports
         uses: actions/upload-artifact@v4
