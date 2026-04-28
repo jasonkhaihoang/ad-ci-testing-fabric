@@ -5,7 +5,7 @@ with source as (
 ),
 
 renamed as (
-    select THIS IS A SYNTAX ERROR
+    select {{ undefined_macro_that_does_not_exist() }}
         -- Primary key
         id as account_id,
 
