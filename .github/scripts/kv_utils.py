@@ -73,19 +73,45 @@ def mask_value(value: str):
 
 
 def normalize_pem(pem: str) -> str:
-    """Convert literal \\n escape sequences to actual newlines.
+    """Normalize a PEM string for Node.js createPrivateKey compatibility.
 
-    Key Vault sometimes stores PEMs as a single-line string with literal
-    backslash-n characters (e.g. pasted from `awk '{printf "%s\\n", $0}'`).
-    actions/create-github-app-token passes the value to Node's createPrivateKey,
-    which requires actual newlines or raises ERR_OSSL_UNSUPPORTED.
+    Handles several Key Vault storage artefacts that cause ERR_OSSL_UNSUPPORTED:
+    - UTF-8 BOM prepended to the value
+    - Literal \\n escape sequences (backslash-n) instead of real newlines
+    - CRLF or bare \\r line endings
+    - Trailing whitespace on individual lines
     """
-    return pem.replace("\\n", "\n")
+    pem = pem.lstrip("﻿")             # strip UTF-8 BOM
+    pem = pem.replace("\\n", "\n")        # literal \n → real newlines
+    pem = pem.replace("\r\n", "\n").replace("\r", "\n")  # CRLF / bare CR → LF
+    pem = "\n".join(line.rstrip() for line in pem.split("\n"))  # strip trailing spaces per line
+    return pem
+
+
+def log_pem_info(pem: str) -> None:
+    """Print non-sensitive PEM metadata to help diagnose format issues in CI logs."""
+    lines = pem.splitlines()
+    header = lines[0] if lines else "<empty>"
+    print(f"[kv_utils] PEM header : {header}", flush=True)
+    print(f"[kv_utils] PEM lines  : {len(lines)}  chars: {len(pem)}", flush=True)
+    anomalies = {
+        "BOM": pem.startswith("﻿"),
+        "CRLF": "\r\n" in pem,
+        "bare-CR": "\r" in pem,
+        "literal-backslash-n": "\\n" in pem,
+        "trailing-space": any(l != l.rstrip() for l in lines),
+    }
+    flagged = [k for k, v in anomalies.items() if v]
+    if flagged:
+        print(f"[kv_utils] PEM anomalies (pre-normalize): {', '.join(flagged)}", flush=True)
+    else:
+        print("[kv_utils] PEM anomalies (pre-normalize): none", flush=True)
 
 
 def cmd_fetch_fabric():
     """Fetch Fabric capacity ID and write to GITHUB_ENV."""
-    capacity_id = get_secret("vibedata-fabric-capacity-id")
+    secret_name = os.environ.get("FABRIC_CAPACITY_ID_KV_NAME") or "vibedata-fabric-capacity-id"
+    capacity_id = get_secret(secret_name)
     write_env("FABRIC_CAPACITY_ID", capacity_id)
     print("Fetched: FABRIC_CAPACITY_ID", flush=True)
 
@@ -95,8 +121,8 @@ def cmd_fetch_github_app():
     The PEM secret name is passed through as-is — the Fabric notebook
     fetches the actual PEM at runtime using its own KV access.
     """
-    app_id_secret_name = os.environ.get("GH_APP_ID_KV_NAME", "vibedata-github-app-id")
-    install_id_secret_name = os.environ.get("GH_INSTALLATION_ID_KV_NAME", "vibedata-github-installation-id")
+    app_id_secret_name = os.environ.get("GH_APP_ID_KV_NAME") or "vibedata-github-app-id"
+    install_id_secret_name = os.environ.get("GH_INSTALLATION_ID_KV_NAME") or "vibedata-github-installation-id"
 
     app_id = get_secret(app_id_secret_name)
     installation_id = get_secret(install_id_secret_name)
@@ -120,7 +146,9 @@ def cmd_fetch_app_token_creds():
     pem_secret_name = os.environ.get("GH_APP_PEM_KV_NAME", "vibedata-github-app-pem")
 
     app_id = get_secret(app_id_secret_name)
-    pem = normalize_pem(get_secret(pem_secret_name))
+    raw_pem = get_secret(pem_secret_name)
+    log_pem_info(raw_pem)
+    pem = normalize_pem(raw_pem)
 
     mask_value(pem)
     write_env("GH_APP_ID_VALUE", app_id)

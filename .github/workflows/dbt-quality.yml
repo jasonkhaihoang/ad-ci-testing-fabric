@@ -1,0 +1,69 @@
+# dbt Quality Workflow
+#
+# Runs dbt-project-evaluator on every PR using DuckDB (offline, no Fabric connection).
+# Runs in parallel with ci.yml — does not block merge.
+# Posts evaluation results as a PR comment (advisory only).
+#
+# Part of the extensible dbt quality check series.
+# Design: docs/2026-04-16-dbt-quality-ci-workflow-design.md
+
+name: dbt Quality
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: pip install dbt-duckdb dbt-core pyyaml --quiet
+
+      - name: dbt deps
+        run: dbt deps --quiet
+
+      - name: dbt compile (offline)
+        env:
+          # Dummy values so the Spark profile resolves without error during compile.
+          # The dbt_quality target uses DuckDB and ignores these.
+          WORKSPACE_ID: dummy
+          WORKSPACE_NAME: dummy
+          LAKEHOUSE: dummy
+          LAKEHOUSE_ID: dummy
+          SCHEMA: dummy
+          DBT_JOB_NAME: dbt-quality
+        run: |
+          dbt compile \
+            --profiles-dir .github/profiles \
+            --target dbt_quality \
+            --quiet 2>/dev/null || true
+
+      - name: Run dbt-project-evaluator
+        run: |
+          dbt build \
+            --select dbt_project_evaluator \
+            --profiles-dir .github/profiles \
+            --target dbt_quality \
+            --quiet || true
+
+      - name: Post PR comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: python3 .github/scripts/dbt_quality_comment.py
