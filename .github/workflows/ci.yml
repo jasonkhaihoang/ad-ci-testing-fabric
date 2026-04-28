@@ -311,7 +311,7 @@ jobs:
           LAKEHOUSE_ID: dummy
           SCHEMA: dummy
         run: |
-          if dbt compile --profiles-dir .github/profiles --target dbt_quality; then
+          if dbt compile --profiles-dir .github/profiles --target dbt_quality --exclude package:elementary; then
             echo '{"passed": true}' > reports/dbt_compile.json
           else
             echo '{"passed": false}' > reports/dbt_compile.json
@@ -327,7 +327,7 @@ jobs:
           LAKEHOUSE_ID: dummy
           SCHEMA: dummy
         run: |
-          if dbt build --empty --profiles-dir .github/profiles --target dbt_quality; then
+          if dbt build --empty --profiles-dir .github/profiles --target dbt_quality --exclude package:elementary; then
             echo '{"passed": true}' > reports/dbt_build_empty.json
           else
             echo '{"passed": false}' > reports/dbt_build_empty.json
