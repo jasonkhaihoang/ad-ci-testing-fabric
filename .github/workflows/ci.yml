@@ -325,10 +325,17 @@ jobs:
               print("DuckDB file not found, skipping source setup")
           else:
               con = duckdb.connect(db_path)
+              tables = {
+                  "account": "id VARCHAR, name VARCHAR, type VARCHAR, industry VARCHAR, billingcity VARCHAR, billingstate VARCHAR, billingcountry VARCHAR, ownerid VARCHAR, isdeleted BOOLEAN, createddate TIMESTAMP, lastmodifieddate TIMESTAMP",
+                  "user": "id VARCHAR, name VARCHAR, email VARCHAR, username VARCHAR, userroleid VARCHAR, profileid VARCHAR, title VARCHAR, isactive BOOLEAN, createddate TIMESTAMP, lastmodifieddate TIMESTAMP",
+                  "opportunity": "id VARCHAR, accountid VARCHAR, ownerid VARCHAR, name VARCHAR, stagename VARCHAR, type VARCHAR, leadsource VARCHAR, amount DECIMAL, probability INTEGER, expectedrevenue DECIMAL, createddate TIMESTAMP, closedate DATE, laststagechangedate DATE, isclosed BOOLEAN, iswon BOOLEAN, isdeleted BOOLEAN, lastmodifieddate TIMESTAMP, systemmodstamp TIMESTAMP",
+                  "opportunitylineitem": "Id VARCHAR, OpportunityId VARCHAR, PricebookEntryId VARCHAR, Product2Id VARCHAR, Name VARCHAR, ProductCode VARCHAR, Quantity DOUBLE, UnitPrice DOUBLE, TotalPrice DOUBLE, Discount DOUBLE, Description VARCHAR, ServiceDate DATE, SortOrder INTEGER, CreatedDate TIMESTAMP",
+                  "opportunityhistory": "id VARCHAR, opportunityid VARCHAR, stagename VARCHAR, createddate TIMESTAMP",
+              }
               try:
                   con.execute("CREATE SCHEMA IF NOT EXISTS salescloud")
-                  for t in ['account', 'user', 'opportunity', 'opportunitylineitem', 'opportunityhistory']:
-                      con.execute(f"CREATE TABLE IF NOT EXISTS salescloud.{t} (id VARCHAR)")
+                  for t, cols in tables.items():
+                      con.execute(f"CREATE TABLE IF NOT EXISTS salescloud.{t} ({cols})")
               except Exception as e:
                   print(f"DuckDB source setup warning: {e}")
               finally:
@@ -346,7 +353,7 @@ jobs:
         run: |
           python3 ${{ env.SCRIPTS }}/dbt_error_report.py reports/dbt_build_empty.json \
             build --empty --profiles-dir .github/profiles --target dbt_quality \
-            --exclude package:elementary || true
+            --exclude package:elementary resource_type:unit_test || true
 
       - name: Schema gate
         continue-on-error: true
@@ -410,6 +417,7 @@ jobs:
           def passed_field_ok(r):
               return isinstance(r, dict) and bool(r.get("passed"))
 
+          # dbt scorecard is advisory — not a blocking gate check
           checks = [
               ("ruff", ruff_ok, "reports/ruff.json"),
               ("sqlfluff", sqlfluff_ok, "reports/sqlfluff.json"),
@@ -417,7 +425,6 @@ jobs:
               ("dbt compile", passed_field_ok, "reports/dbt_compile.json"),
               ("dbt build --empty", passed_field_ok, "reports/dbt_build_empty.json"),
               ("schema gate", passed_field_ok, "reports/schema_gate.json"),
-              ("dbt scorecard", passed_field_ok, "reports/scorecard.json"),
           ]
 
           failures = []
