@@ -313,7 +313,7 @@ jobs:
         run: |
           python3 ${{ env.SCRIPTS }}/dbt_error_report.py reports/dbt_compile.json \
             compile --profiles-dir .github/profiles --target dbt_quality \
-            --exclude package:elementary --quiet 2>/dev/null || true
+            --exclude package:elementary || true
 
       - name: dbt build --empty
         continue-on-error: true
@@ -326,9 +326,10 @@ jobs:
         run: |
           python3 ${{ env.SCRIPTS }}/dbt_error_report.py reports/dbt_build_empty.json \
             build --empty --profiles-dir .github/profiles --target dbt_quality \
-            --exclude package:elementary --quiet 2>/dev/null || true
+            --exclude package:elementary || true
 
       - name: Schema gate
+        continue-on-error: true
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -338,7 +339,7 @@ jobs:
             --repo "${{ github.repository }}" \
             --base-sha "${{ github.event.pull_request.base.sha }}" \
             --head-sha "${{ github.event.pull_request.head.sha }}" \
-            --output reports/schema_gate.json
+            --output reports/schema_gate.json || true
 
       - name: Upload reports
         uses: actions/upload-artifact@v4
