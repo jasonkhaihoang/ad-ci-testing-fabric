@@ -302,6 +302,7 @@ jobs:
             --agents-md AGENTS.md \
             > reports/scorecard.json
 
+
       - name: dbt compile
         continue-on-error: true
         env:
@@ -345,6 +346,7 @@ jobs:
             --base-sha "${{ github.event.pull_request.base.sha }}" \
             --head-sha "${{ github.event.pull_request.head.sha }}" \
             --output reports/schema_gate.json
+
 
       - name: Upload reports
         uses: actions/upload-artifact@v4

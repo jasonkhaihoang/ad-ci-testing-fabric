@@ -32,6 +32,25 @@ def icon(passed: bool) -> str:
     return "✅" if passed else "❌"
 
 
+_VIOLATION_CAP = 20
+
+
+def _format_naming_violations_table(violations: list) -> str:
+    remainder = max(0, len(violations) - _VIOLATION_CAP)
+    rows = "\n".join(
+        f"| `{v['model']}` | `{v['path']}` | {v['issue']} |"
+        for v in violations[:_VIOLATION_CAP]
+    )
+    tail = f"\n\n_…and {remainder} more_" if remainder else ""
+    return (
+        f"<details>\n<summary>Naming violations ({len(violations)})</summary>\n\n"
+        f"| Model | Path | Reason |\n"
+        f"|-------|------|--------|\n"
+        f"{rows}{tail}\n\n"
+        f"</details>\n"
+    )
+
+
 def format_ruff(report: list) -> tuple[bool, str]:
     """Returns (passed, sub_section_markdown)."""
     issues = report if isinstance(report, list) else []
@@ -131,6 +150,9 @@ def format_scorecard_section(report: dict) -> tuple[bool, str]:
     for check, passed, result in checks:
         table += f"| {check} | {icon(passed)} | {result} |\n"
     section = f"#### dbt Scorecard\n\n_{model_count} model(s) analysed_\n\n{table}"
+    violations_list = report.get("naming_violations", [])
+    if violations_list:
+        section += _format_naming_violations_table(violations_list)
     return section_passed, section
 
 
@@ -322,18 +344,22 @@ def _collapsible_scorecard(report: dict) -> str:
     desc = report.get("description_coverage_pct", 0)
     col = report.get("column_coverage_pct", 0)
     pk = report.get("pk_test_coverage_pct", 0)
-    violations = report.get("naming_violation_count", 0)
+    violations_count = report.get("naming_violation_count", 0)
     model_count = report.get("model_count", 0)
     checks = [
         ("Model descriptions", desc >= 80, f"{desc}% (need ≥80%)"),
         ("Column descriptions", col >= 80, f"{col}% (need ≥80%)"),
         ("PK test coverage", pk >= 80, f"{pk}% (need ≥80%)"),
-        ("Naming conventions", violations == 0, f"{violations} violations (need 0)"),
+        ("Naming conventions", violations_count == 0, f"{violations_count} violations (need 0)"),
     ]
     rows = "\n".join(f"| {c} | {icon(p)} | {v} |" for c, p, v in checks)
+    body = f"| Metric | Status | Value |\n|--------|--------|-------|\n{rows}\n\n"
+    violations_list = report.get("naming_violations", [])
+    if violations_list:
+        body += _format_naming_violations_table(violations_list)
     return (
         f"<details>\n<summary>dbt Scorecard — {model_count} model(s) analysed</summary>\n\n"
-        f"| Metric | Status | Value |\n|--------|--------|-------|\n{rows}\n\n</details>\n"
+        f"{body}</details>\n"
     )
 
 
