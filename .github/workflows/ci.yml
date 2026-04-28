@@ -7,6 +7,8 @@
 # Required GitHub Variables (set at org or repo level):
 #   AZURE_TENANT_ID, AZURE_KV_CLIENT_ID, AZURE_FABRIC_CLIENT_ID, AZURE_KEYVAULT_URL
 #   GH_APP_ID_KV_NAME, GH_INSTALLATION_ID_KV_NAME, GH_APP_PEM_KV_NAME
+#   FABRIC_CAPACITY_ID_KV_NAME  (optional — defaults to "vibedata-fabric-capacity-id")
+#   AAD_DOMAIN  (optional — UPN domain for PR author lookup, defaults to eng.acceleratedata.ai)
 
 name: Ephemeral Fabric CI
 
@@ -158,8 +160,8 @@ jobs:
           echo "Ephemeral workspace name: ${NAME}"
 
   # ─── PROVISION ────────────────────────────────────────────────────────────
-  # 1. KV UAMI: fetch vibedata-fabric-capacity-id from Key Vault → GITHUB_ENV
-  # 2. Fabric UAMI: find-or-create workspace + lakehouse
+  # 1. KV UAMI: fetch Fabric capacity ID + GitHub App config → GITHUB_ENV
+  # 2. Fabric UAMI: find-or-create workspace + lakehouse, inject notebook
   provision:
     needs: preflight
     runs-on: ubuntu-latest
@@ -185,7 +187,15 @@ jobs:
       - name: Fetch Fabric capacity ID from Key Vault
         env:
           AZURE_KEYVAULT_URL: ${{ vars.AZURE_KEYVAULT_URL }}
+          FABRIC_CAPACITY_ID_KV_NAME: ${{ vars.FABRIC_CAPACITY_ID_KV_NAME }}
         run: python3 ${{ env.SCRIPTS }}/kv_utils.py fetch-fabric
+
+      - name: Fetch GitHub App config from Key Vault
+        env:
+          AZURE_KEYVAULT_URL: ${{ vars.AZURE_KEYVAULT_URL }}
+          GH_APP_ID_KV_NAME: ${{ vars.GH_APP_ID_KV_NAME }}
+          GH_INSTALLATION_ID_KV_NAME: ${{ vars.GH_INSTALLATION_ID_KV_NAME }}
+        run: python3 ${{ env.SCRIPTS }}/kv_utils.py fetch-github-app
 
       - name: Login — Fabric UAMI
         uses: azure/login@v2
@@ -200,10 +210,29 @@ jobs:
           EPHEMERAL_NAME: ${{ needs.preflight.outputs.ephemeral_name }}
         run: python3 ${{ env.SCRIPTS }}/fabric_api.py provision --name "$EPHEMERAL_NAME"
 
+      - name: Add PR author as Contributor on ephemeral workspace
+        env:
+          AAD_DOMAIN: ${{ vars.AAD_DOMAIN }}
+          AAD_UPN_OVERRIDE: ${{ secrets.AAD_UPN_OVERRIDE }}
+        run: |
+          python3 ${{ env.SCRIPTS }}/fabric_api.py add-contributor \
+            --workspace-id "${{ steps.provision.outputs.workspace_id }}" \
+            --github-login "${{ github.event.pull_request.user.login }}"
+
+      - name: Inject notebook into ephemeral workspace
+        env:
+          AZURE_KEYVAULT_URL: ${{ vars.AZURE_KEYVAULT_URL }}
+          EPHEMERAL_WORKSPACE_ID: ${{ steps.provision.outputs.workspace_id }}
+          EPHEMERAL_WORKSPACE_NAME: ${{ needs.preflight.outputs.ephemeral_name }}
+          EPHEMERAL_LAKEHOUSE_ID: ${{ steps.provision.outputs.lakehouse_id }}
+          NOTEBOOK_GLOB: ${{ needs.preflight.outputs.notebook_glob }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+          REPO_URL: ${{ github.event.repository.clone_url }}
+          GH_APP_PEM_KV_NAME: ${{ vars.GH_APP_PEM_KV_NAME }}
+        run: python3 ${{ env.SCRIPTS }}/inject_notebook.py
+
   # ─── STATIC ANALYSIS ──────────────────────────────────────────────────────
-  # 1. Run linting tools (no Azure needed)
-  # 2. KV UAMI: fetch GitHub App config → GITHUB_ENV
-  # 3. Fabric UAMI: upload injected notebook to ephemeral workspace
+  # Runs linting tools only — no Azure access needed.
   static-analysis:
     needs: [preflight, provision]
     runs-on: ubuntu-latest
@@ -216,7 +245,7 @@ jobs:
 
       - name: Install analysis tools
         run: |
-          pip install ruff sqlfluff pyyaml dbt-core --quiet
+          pip install ruff sqlfluff pyyaml dbt-core dbt-duckdb --quiet
           curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
             | tar xz -C /usr/local/bin gitleaks
 
@@ -244,44 +273,12 @@ jobs:
           SCHEMA: dummy
           DBT_JOB_NAME: ci-parse
         run: |
-          dbt parse --profiles-dir . --quiet 2>/dev/null || true
+          dbt deps --quiet 2>/dev/null || true
+          dbt parse --profiles-dir .github/profiles --target dbt_quality --quiet 2>/dev/null || true
           python3 ${{ env.SCRIPTS }}/scorecard.py \
             --manifest target/manifest.json \
             --agents-md AGENTS.md \
             > reports/scorecard.json
-
-      - name: Login — KV UAMI
-        uses: azure/login@v2
-        with:
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_KV_CLIENT_ID }}
-          allow-no-subscriptions: true
-
-      - name: Fetch GitHub App config from Key Vault
-        env:
-          AZURE_KEYVAULT_URL: ${{ vars.AZURE_KEYVAULT_URL }}
-          GH_APP_ID_KV_NAME: ${{ vars.GH_APP_ID_KV_NAME }}
-          GH_INSTALLATION_ID_KV_NAME: ${{ vars.GH_INSTALLATION_ID_KV_NAME }}
-        run: python3 ${{ env.SCRIPTS }}/kv_utils.py fetch-github-app
-
-      - name: Login — Fabric UAMI
-        uses: azure/login@v2
-        with:
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
-          allow-no-subscriptions: true
-
-      - name: Inject notebook into ephemeral workspace
-        env:
-          AZURE_KEYVAULT_URL: ${{ vars.AZURE_KEYVAULT_URL }}
-          EPHEMERAL_WORKSPACE_ID: ${{ needs.provision.outputs.ephemeral_workspace_id }}
-          EPHEMERAL_WORKSPACE_NAME: ${{ needs.preflight.outputs.ephemeral_name }}
-          EPHEMERAL_LAKEHOUSE_ID: ${{ needs.provision.outputs.ephemeral_lakehouse_id }}
-          NOTEBOOK_GLOB: ${{ needs.preflight.outputs.notebook_glob }}
-          HEAD_BRANCH: ${{ github.head_ref }}
-          REPO_URL: ${{ github.event.repository.clone_url }}
-          GH_APP_PEM_KV_NAME: ${{ vars.GH_APP_PEM_KV_NAME }}
-        run: python3 ${{ env.SCRIPTS }}/inject_notebook.py
 
       - name: Upload reports
         uses: actions/upload-artifact@v4

@@ -5,12 +5,12 @@
 #
 # VD Studio populates this file automatically at domain setup time.
 
-domain: sales
+domain: <domain-name>                    # e.g. sales, finance, production
 
-prod_workspace_id: e8d68e63-2a03-47c9-ba7b-27ff316b001b
-prod_workspace_name: sampledata
-prod_lakehouse_id: fd8a5cce-a23c-4173-b092-8c34b10f84e0
-prod_lakehouse_name: salesforce
-prod_schema: sales_datamart
+prod_workspace_id: <guid>               # Production Fabric workspace ID
+prod_workspace_name: <string>           # Production Fabric workspace display name
+prod_lakehouse_id: <guid>               # Production Fabric lakehouse ID
+prod_lakehouse_name: <string>           # Production Fabric lakehouse display name
+prod_schema: <string>                   # Production schema name (e.g. sales_datamart)
 
-notebook_glob: "intents/**/notebook.ipynb"
+notebook_glob: "intents/**/*.ipynb"         # Glob pattern to find the dbt notebook
