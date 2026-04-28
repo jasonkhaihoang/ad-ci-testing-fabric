@@ -57,7 +57,9 @@ def scorecard(manifest: dict, agents_md_path: str) -> dict:
             "column_coverage_pct": 0,
             "pk_test_coverage_pct": 0,
             "naming_violations": [],
+            "naming_violation_count": 0,
             "summary": "No models found in manifest.",
+            "passed": False,
         }
 
     # Description coverage
@@ -101,6 +103,13 @@ def scorecard(manifest: dict, agents_md_path: str) -> dict:
                 "issue": f"Name '{name}' does not match expected prefix (stg_/fct_/dim_/int_)",
             })
 
+    passed = (
+        desc_pct >= 80
+        and col_pct >= 80
+        and pk_pct >= 80
+        and len(violations) == 0
+    )
+
     return {
         "model_count": len(models),
         "models_with_description": models_with_desc,
@@ -113,6 +122,7 @@ def scorecard(manifest: dict, agents_md_path: str) -> dict:
         "pk_test_coverage_pct": pk_pct,
         "naming_violations": violations,
         "naming_violation_count": len(violations),
+        "passed": passed,
     }
 
 

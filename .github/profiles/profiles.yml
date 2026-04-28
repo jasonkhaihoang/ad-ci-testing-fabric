@@ -1,0 +1,10 @@
+# DuckDB profile for offline dbt-project-evaluator runs.
+# Used only by dbt-quality.yml — not for production dbt runs.
+# The profile name (dbt_fab_spark) matches dbt_project.yml so no project file changes are needed.
+dbt_fab_spark:
+  outputs:
+    dbt_quality:
+      type: duckdb
+      path: /tmp/vibedata_dbt_quality.duckdb
+      threads: 4
+  target: dbt_quality
