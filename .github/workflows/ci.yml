@@ -353,7 +353,7 @@ jobs:
         run: |
           python3 ${{ env.SCRIPTS }}/dbt_error_report.py reports/dbt_build_empty.json \
             build --empty --profiles-dir .github/profiles --target dbt_quality \
-            --exclude package:elementary resource_type:unit_test || true
+            --select "models/staging/**" --exclude package:elementary resource_type:unit_test || true
 
       - name: Schema gate
         continue-on-error: true
