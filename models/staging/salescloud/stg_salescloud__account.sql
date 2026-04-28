@@ -5,7 +5,7 @@ with source as (
 ),
 
 renamed as (
-    select {{ undefined_macro_that_does_not_exist() }}
+    select
         -- Primary key
         id as account_id,
 
