@@ -183,7 +183,7 @@ def format_gate_0(compile_result: dict, build_empty_result: dict, schema_gate: d
         sg_cell = f"❌ {len(violations)} violation(s)"
 
     table = (
-        f"| Check | Result |\n|-------|--------|\n"
+        "| Check | Result |\n|-------|--------|\n"
         + _item(compile_result, "dbt compile")
         + _item(build_empty_result, "dbt build --empty")
         + f"| Schema gate | {sg_cell} |\n"

@@ -99,7 +99,7 @@ def log_pem_info(pem: str) -> None:
         "CRLF": "\r\n" in pem,
         "bare-CR": "\r" in pem,
         "literal-backslash-n": "\\n" in pem,
-        "trailing-space": any(l != l.rstrip() for l in lines),
+        "trailing-space": any(line != line.rstrip() for line in lines),
     }
     flagged = [k for k, v in anomalies.items() if v]
     if flagged:

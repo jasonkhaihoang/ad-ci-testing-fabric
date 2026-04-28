@@ -45,7 +45,6 @@ def check_naming(model_name: str) -> bool:
 
 def scorecard(manifest: dict, agents_md_path: str) -> dict:
     nodes = manifest.get("nodes", {})
-    sources = manifest.get("sources", {})
 
     # Filter to model nodes only
     models = {k: v for k, v in nodes.items() if v.get("resource_type") == "model"}

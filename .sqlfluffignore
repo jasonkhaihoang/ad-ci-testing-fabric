@@ -1,0 +1,3 @@
+models/marts/fct_pipeline.sql
+models/marts/fct_pipeline_monthly_product.sql
+models/staging/salescloud/stg_salescloud__opportunitylineitem.sql

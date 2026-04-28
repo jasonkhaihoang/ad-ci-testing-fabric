@@ -200,7 +200,7 @@ def substitute_parameters_cell(notebook: dict) -> dict:
     # Build the substituted parameters cell source
     new_params = [
         "# Parameters — injected by CI (do not edit manually)\n",
-        f'command = ["dbt deps", "dbt build --select state:modified+ --defer --state ./prod-state --target prod", "dbt test --select state:modified+ --store-failures --target prod"]\n',
+        'command = ["dbt deps", "dbt build --select state:modified+ --defer --state ./prod-state --target prod", "dbt test --select state:modified+ --store-failures --target prod"]\n',
         f'repo_url = "{repo_url}"\n',
         f'repo_branch = "{branch}"\n',
         f'github_app_id = "{github_app_id}"\n',
@@ -211,7 +211,7 @@ def substitute_parameters_cell(notebook: dict) -> dict:
         f'lakehouse_id = "{lakehouse_id}"\n',
         f'workspace_id = "{workspace_id}"\n',
         f'workspace_name = "{workspace_name}"\n',
-        f'schema_name = "dbo"\n',
+        'schema_name = "dbo"\n',
     ]
 
     # Find and replace the Parameters cell (first cell with "Parameters" comment or tag)

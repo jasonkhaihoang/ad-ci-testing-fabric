@@ -2,7 +2,6 @@ version: 2
 
 sources:
   - name: salescloud
-    database: '`sampledata`.`salesforce`'
     schema: salescloud
     tables:
       - name: opportunity

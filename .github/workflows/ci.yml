@@ -296,7 +296,7 @@ jobs:
           DBT_JOB_NAME: ci-parse
         run: |
           dbt deps --quiet 2>/dev/null || true
-          dbt parse --profiles-dir .github/profiles --target dbt_quality --exclude package:elementary --quiet 2>/dev/null || true
+          dbt compile --profiles-dir .github/profiles --target dbt_quality --exclude package:elementary --quiet 2>/dev/null || true
           python3 ${{ env.SCRIPTS }}/scorecard.py \
             --manifest target/manifest.json \
             --agents-md AGENTS.md \
@@ -314,6 +314,26 @@ jobs:
           python3 ${{ env.SCRIPTS }}/dbt_error_report.py reports/dbt_compile.json \
             compile --profiles-dir .github/profiles --target dbt_quality \
             --exclude package:elementary || true
+
+      - name: Setup DuckDB source tables for offline build
+        continue-on-error: true
+        run: |
+          python3 - <<'PYEOF'
+          import duckdb, os
+          db_path = '/tmp/vibedata_dbt_quality.duckdb'
+          if not os.path.exists(db_path):
+              print("DuckDB file not found, skipping source setup")
+          else:
+              con = duckdb.connect(db_path)
+              try:
+                  con.execute("CREATE SCHEMA IF NOT EXISTS salescloud")
+                  for t in ['account', 'user', 'opportunity', 'opportunitylineitem', 'opportunityhistory']:
+                      con.execute(f"CREATE TABLE IF NOT EXISTS salescloud.{t} (id VARCHAR)")
+              except Exception as e:
+                  print(f"DuckDB source setup warning: {e}")
+              finally:
+                  con.close()
+          PYEOF
 
       - name: dbt build --empty
         continue-on-error: true
