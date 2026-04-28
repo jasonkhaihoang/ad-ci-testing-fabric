@@ -205,6 +205,154 @@ def build_comment(workspace_id: str, workspace_name: str, head_branch: str) -> s
 """
 
 
+def _detail_ruff(report) -> str:
+    issues = report if isinstance(report, list) else []
+    if not issues:
+        return "No issues"
+    rule_counts = Counter(item.get("code", "unknown") for item in issues)
+    top = ", ".join(f"`{r}` ×{n}" for r, n in sorted(rule_counts.items())[:3])
+    suffix = f" (+{len(rule_counts) - 3} more rules)" if len(rule_counts) > 3 else ""
+    return f"{len(issues)} issue(s) — {top}{suffix}"
+
+
+def _detail_sqlfluff(report) -> str:
+    file_results = report if isinstance(report, list) else report.get("files", [])
+    total = sum(len(f.get("violations", [])) for f in file_results)
+    files = sum(1 for f in file_results if f.get("violations"))
+    if total == 0:
+        return "No violations"
+    return f"{total} violation(s) across {files} file(s)"
+
+
+def _detail_gitleaks(report) -> str:
+    findings = report if isinstance(report, list) else report.get("findings", [])
+    if not findings:
+        return "No secrets found"
+    return f"{len(findings)} secret(s) found — merge blocked"
+
+
+def _detail_scorecard(report: dict) -> str:
+    if not report:
+        return "⚠️ Unavailable"
+    if report.get("passed"):
+        return "All thresholds met"
+    desc = report.get("description_coverage_pct", 0)
+    col = report.get("column_coverage_pct", 0)
+    pk = report.get("pk_test_coverage_pct", 0)
+    violations = report.get("naming_violation_count", 0)
+    parts = []
+    if desc < 80:
+        parts.append(f"Desc {desc}%")
+    if col < 80:
+        parts.append(f"Col {col}%")
+    if pk < 80:
+        parts.append(f"PK {pk}%")
+    if violations > 0:
+        parts.append(f"{violations} naming violations")
+    return " · ".join(parts) + " (need ≥80% / 0)"
+
+
+def _detail_compile(report: dict | None) -> str:
+    if not report:
+        return "⚠️ Unavailable"
+    return "Compiled successfully" if report.get("passed") else "Compilation failed"
+
+
+def _detail_build_empty(report: dict | None) -> str:
+    if not report:
+        return "⚠️ Unavailable"
+    return "Built successfully" if report.get("passed") else "Build failed"
+
+
+def _detail_schema_gate(report: dict | None) -> str:
+    if not report:
+        return "⚠️ Unavailable"
+    evaluated = report.get("models_evaluated", 0)
+    violations = report.get("violations", [])
+    if report.get("passed"):
+        return f"{evaluated} model(s) evaluated — all pass" if evaluated else "0 changed models"
+    return f"{len(violations)} violation(s) across {evaluated} model(s)"
+
+
+def _collapsible_ruff(report) -> str:
+    issues = report if isinstance(report, list) else []
+    if not issues:
+        return ""
+    rule_counts = Counter(item.get("code", "unknown") for item in issues)
+    rows = "\n".join(f"| `{r}` | {n} |" for r, n in sorted(rule_counts.items()))
+    return (
+        f"<details>\n<summary>ruff — per-rule breakdown</summary>\n\n"
+        f"| Rule | Count |\n|------|-------|\n{rows}\n\n</details>\n"
+    )
+
+
+def _collapsible_sqlfluff(report) -> str:
+    file_results = report if isinstance(report, list) else report.get("files", [])
+    file_counts = {
+        f.get("filepath", "unknown"): len(f.get("violations", []))
+        for f in file_results if f.get("violations")
+    }
+    if not file_counts:
+        return ""
+    rows = "\n".join(f"| `{fp}` | {n} |" for fp, n in sorted(file_counts.items()))
+    return (
+        f"<details>\n<summary>sqlfluff — per-file breakdown</summary>\n\n"
+        f"| File | Violations |\n|------|------------|\n{rows}\n\n</details>\n"
+    )
+
+
+def _collapsible_gitleaks(report) -> str:
+    findings = report if isinstance(report, list) else report.get("findings", [])
+    if not findings:
+        return ""
+    lines = []
+    for f in findings:
+        secret_type = f.get("RuleID") or f.get("Description", "unknown")
+        lines.append(f"| `{secret_type}` | `{f.get('File', 'unknown')}` | {f.get('StartLine', '?')} |")
+    rows = "\n".join(lines)
+    return (
+        f"<details>\n<summary>gitleaks — findings (no secret values shown)</summary>\n\n"
+        f"| Type | File | Line |\n|------|------|------|\n{rows}\n\n</details>\n"
+    )
+
+
+def _collapsible_scorecard(report: dict) -> str:
+    if not report or report.get("passed"):
+        return ""
+    desc = report.get("description_coverage_pct", 0)
+    col = report.get("column_coverage_pct", 0)
+    pk = report.get("pk_test_coverage_pct", 0)
+    violations = report.get("naming_violation_count", 0)
+    model_count = report.get("model_count", 0)
+    checks = [
+        ("Model descriptions", desc >= 80, f"{desc}% (need ≥80%)"),
+        ("Column descriptions", col >= 80, f"{col}% (need ≥80%)"),
+        ("PK test coverage", pk >= 80, f"{pk}% (need ≥80%)"),
+        ("Naming conventions", violations == 0, f"{violations} violations (need 0)"),
+    ]
+    rows = "\n".join(f"| {c} | {icon(p)} | {v} |" for c, p, v in checks)
+    return (
+        f"<details>\n<summary>dbt Scorecard — {model_count} model(s) analysed</summary>\n\n"
+        f"| Metric | Status | Value |\n|--------|--------|-------|\n{rows}\n\n</details>\n"
+    )
+
+
+def _collapsible_schema_gate(report: dict | None) -> str:
+    if not report:
+        return ""
+    violations = report.get("violations", [])
+    if not violations:
+        return ""
+    lines = "\n".join(
+        f"- `{v['model']}` (`{v['path']}`): {', '.join(v['issues'])}"
+        for v in violations
+    )
+    return (
+        f"<details>\n<summary>schema gate — violations</summary>\n\n"
+        f"{lines}\n\n</details>\n"
+    )
+
+
 def build_details_comment(
     ruff: list,
     sqlfluff: dict,
@@ -214,17 +362,16 @@ def build_details_comment(
     build_empty_result: dict | None = None,
     schema_gate: dict | None = None,
 ) -> str:
-    """Static analysis details comment — summary table + sub-sections."""
-    ruff_passed, ruff_section = format_ruff(ruff)
-    sql_passed, sql_section = format_sqlfluff(sqlfluff)
-    gl_passed, gl_section = format_gitleaks(gitleaks)
-    sc_passed, sc_section = format_scorecard_section(scorecard)
+    """Gate 0 — Static Analysis comment: unified table + collapsible drill-downs."""
+    ruff_passed, _ = format_ruff(ruff)
+    sql_passed, _ = format_sqlfluff(sqlfluff)
+    gl_passed, _ = format_gitleaks(gitleaks)
+    sc_passed, _ = format_scorecard_section(scorecard)
 
     has_gate_0 = bool(compile_result or build_empty_result or schema_gate)
     gate_0_passed = True
-    gate_0_section = ""
     if has_gate_0:
-        gate_0_passed, gate_0_section = format_gate_0(
+        gate_0_passed, _ = format_gate_0(
             compile_result or {}, build_empty_result or {}, schema_gate or {}
         )
 
@@ -236,28 +383,35 @@ def build_details_comment(
             return "⚠️"
         return icon(bool(report.get("passed")))
 
-    summary = "| Check | Status |\n|-------|--------|\n"
+    table = "| Check | Status | Detail |\n|-------|--------|--------|\n"
     if has_gate_0:
-        summary += (
-            f"| dbt compile | {_status(compile_result)} |\n"
-            f"| dbt build --empty | {_status(build_empty_result)} |\n"
-            f"| Schema gate | {_status(schema_gate)} |\n"
+        table += (
+            f"| dbt compile | {_status(compile_result)} | {_detail_compile(compile_result)} |\n"
+            f"| dbt build --empty | {_status(build_empty_result)} | {_detail_build_empty(build_empty_result)} |\n"
+            f"| Schema gate | {_status(schema_gate)} | {_detail_schema_gate(schema_gate)} |\n"
         )
-    summary += (
-        f"| ruff | {icon(ruff_passed)} |\n"
-        f"| sqlfluff | {icon(sql_passed)} |\n"
-        f"| gitleaks | {icon(gl_passed)} |\n"
-        f"| dbt Scorecard | {icon(sc_passed)} |\n"
+    table += (
+        f"| ruff | {icon(ruff_passed)} | {_detail_ruff(ruff)} |\n"
+        f"| sqlfluff | {icon(sql_passed)} | {_detail_sqlfluff(sqlfluff)} |\n"
+        f"| gitleaks | {icon(gl_passed)} | {_detail_gitleaks(gitleaks)} |\n"
+        f"| dbt Scorecard | {icon(sc_passed)} | {_detail_scorecard(scorecard)} |\n"
     )
 
     parts = [
         f"{DETAILS_COMMENT_MARKER}\n"
-        f"## Static Analysis {overall_icon}\n\n"
-        f"{summary}\n"
+        f"## Gate 0 — Static Analysis {overall_icon}\n\n"
+        f"{table}\n"
     ]
-    if has_gate_0:
-        parts.append(gate_0_section + "\n")
-    parts.extend([ruff_section + "\n", sql_section + "\n", gl_section + "\n", sc_section])
+
+    for collapsible in [
+        _collapsible_ruff(ruff),
+        _collapsible_sqlfluff(sqlfluff),
+        _collapsible_gitleaks(gitleaks),
+        _collapsible_scorecard(scorecard),
+        _collapsible_schema_gate(schema_gate) if has_gate_0 else "",
+    ]:
+        if collapsible:
+            parts.append(collapsible + "\n")
 
     return "".join(parts)
 
