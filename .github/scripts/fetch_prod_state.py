@@ -181,29 +181,36 @@ def fetch_onelake_mode(cfg: dict) -> bool:
 
 
 def fetch_greenfield() -> None:
-    """Parse the current branch with the dbt_quality profile; use output as prod state."""
-    head_sha = os.environ.get("HEAD_SHA", "")
-    print("⚠️  No prod manifest available — running dbt parse for greenfield fallback.", flush=True)
+    """Emit a minimal `prod-state/manifest.json` so `state:modified+` selects everything.
 
-    # `dbt parse` requires `dbt_packages/` to resolve cross-package refs.
-    # Best-effort: failures here don't abort — `dbt parse` will surface a
-    # clearer error if a package is genuinely missing.
+    Greenfield = no CD-published manifest available. By design we want Slim CI to
+    degrade to a full build (every model is `state:new` against the empty previous
+    state). To do that we always write a minimal manifest with `nodes: {}` and
+    `sources: {}` — the parse output of the current branch is NEVER used as the
+    `--state` source, because that would make `state:modified+` resolve to ∅ and
+    Slim CI would silently build nothing.
+
+    A best-effort `dbt deps` + `dbt parse` runs purely as a diagnostic so project-
+    level errors surface in the CI log; their outputs are intentionally discarded.
+    See ephemeral-ci-workflow-design-v1.4.md §4.3.
+    """
+    head_sha = os.environ.get("HEAD_SHA", "")
+    print("⚠️  No prod manifest available — greenfield fallback (full build).", flush=True)
+
+    # Diagnostic only: surface project-level errors. Output NOT used as prod manifest.
     deps = subprocess.run(
         ["dbt", "deps", "--profiles-dir", ".github/profiles", "--target", "dbt_quality"],
         capture_output=True, text=True,
     )
     if deps.returncode != 0:
         print(
-            f"::warning::dbt deps failed (exit {deps.returncode}); "
-            f"continuing to dbt parse anyway. stdout/stderr (first 300 chars): "
+            f"::warning::dbt deps failed (exit {deps.returncode}). "
+            f"stdout/stderr (first 300 chars): "
             f"{(deps.stdout + deps.stderr)[:300]}",
             flush=True,
         )
 
-    # Match the static-analysis job: exclude elementary (heavy + not relevant for state).
-    # Drop --quiet so any failure carries a diagnostic message — dbt writes parse
-    # errors to stdout which --quiet would otherwise swallow.
-    result = subprocess.run(
+    parse = subprocess.run(
         [
             "dbt", "parse",
             "--profiles-dir", ".github/profiles",
@@ -212,24 +219,20 @@ def fetch_greenfield() -> None:
         ],
         capture_output=True, text=True,
     )
-
-    os.makedirs("prod-state", exist_ok=True)
-    manifest_src = "target/manifest.json"
-
-    if result.returncode == 0 and os.path.exists(manifest_src):
-        shutil.copy2(manifest_src, "prod-state/manifest.json")
-        write_source_json(mode="greenfield", source="dbt parse (current branch)", head_sha=head_sha)
-        return
-
-    if result.returncode != 0:
+    if parse.returncode != 0:
         # dbt prints parse errors to stdout (not stderr); include both.
         print(
-            f"::warning::dbt parse failed (exit {result.returncode}). "
+            f"::warning::dbt parse failed (exit {parse.returncode}). "
             f"stdout/stderr (first 500 chars): "
-            f"{(result.stdout + result.stderr)[:500]}",
+            f"{(parse.stdout + parse.stderr)[:500]}",
             flush=True,
         )
-    # Minimal manifest so downstream jobs have a valid file to upload
+
+    # Always emit minimal manifest. Empty `nodes` makes every current-branch
+    # model count as `state:new`, so `state:modified+` selects everything →
+    # Slim CI degrades to a full build. This is the design intent for
+    # greenfield: AWAP v1.4 §4.3.
+    os.makedirs("prod-state", exist_ok=True)
     minimal = {
         "metadata": {
             "dbt_schema_version": "https://schemas.getdbt.com/dbt/manifest/v12.json",
@@ -240,7 +243,11 @@ def fetch_greenfield() -> None:
     }
     with open("prod-state/manifest.json", "w") as f:
         json.dump(minimal, f, indent=2)
-    write_source_json(mode="greenfield", source="minimal manifest (dbt parse unavailable)", head_sha=head_sha)
+    write_source_json(
+        mode="greenfield",
+        source="minimal manifest (full build — no prod state available)",
+        head_sha=head_sha,
+    )
 
 
 # ─── Config ───────────────────────────────────────────────────────────────────
