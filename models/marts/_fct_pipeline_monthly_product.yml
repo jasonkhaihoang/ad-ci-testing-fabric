@@ -32,6 +32,7 @@ models:
         data_type: string
         tests:
           - not_null
+          - unique
 
       - name: product_code
         description: Product code or SKU for the product

@@ -8,6 +8,7 @@ to produce a JSON scorecard with:
   - pk_test_coverage: % of PKs with not_null + unique tests
   - naming_violations: list of models violating AGENTS.md conventions
 
+Only the project's own models are evaluated (package models are excluded).
 Output is written to stdout as JSON.
 """
 
@@ -32,7 +33,6 @@ def load_naming_rules(agents_md_path: str) -> list[str]:
         return []
     with open(agents_md_path) as f:
         content = f.read()
-    # Extract patterns from the Naming Conventions table (Pattern column)
     patterns = re.findall(r"`(stg_\{[^`]+\}|fct_\{[^`]+\}|dim_\{[^`]+\})`", content)
     return patterns
 
@@ -43,12 +43,40 @@ def check_naming(model_name: str) -> bool:
     return any(model_name.startswith(p) for p in valid_prefixes)
 
 
+def _build_pk_test_index(nodes: dict) -> dict[str, set[str]]:
+    """Return {(model_unique_id, column_name): {test_names}} for _id columns.
+
+    dbt 1.8+ stores tests as separate nodes; the model node's data_tests field
+    is no longer populated. This index is used as the authoritative test source.
+    """
+    index: dict[str, set[str]] = {}
+    pk_pattern = re.compile(r"_id$", re.IGNORECASE)
+    for v in nodes.values():
+        if v.get("resource_type") != "test":
+            continue
+        attached = v.get("attached_node")
+        col = v.get("column_name") or ""
+        test_name = (v.get("test_metadata") or {}).get("name", "")
+        if not attached or not test_name or not pk_pattern.search(col):
+            continue
+        key = (attached, col)
+        index.setdefault(key, set()).add(test_name)
+    return index
+
+
 def scorecard(manifest: dict, agents_md_path: str) -> dict:
     nodes = manifest.get("nodes", {})
-    sources = manifest.get("sources", {})
+    project_name = manifest.get("metadata", {}).get("project_name")
 
-    # Filter to model nodes only
-    models = {k: v for k, v in nodes.items() if v.get("resource_type") == "model"}
+    # Only evaluate the project's own models, not installed package models.
+    def _is_own_model(v: dict) -> bool:
+        if v.get("resource_type") != "model":
+            return False
+        if project_name:
+            return v.get("package_name") == project_name
+        return True
+
+    models = {k: v for k, v in nodes.items() if _is_own_model(v)}
 
     if not models:
         return {
@@ -61,6 +89,8 @@ def scorecard(manifest: dict, agents_md_path: str) -> dict:
             "summary": "No models found in manifest.",
             "passed": False,
         }
+
+    pk_test_index = _build_pk_test_index(nodes)
 
     # Description coverage
     models_with_desc = sum(1 for m in models.values() if m.get("description", "").strip())
@@ -76,20 +106,22 @@ def scorecard(manifest: dict, agents_md_path: str) -> dict:
                 cols_with_desc += 1
     col_pct = round(100 * cols_with_desc / total_cols, 1) if total_cols else 0
 
-    # PK test coverage: check that each model's primary key column has not_null + unique
+    # PK test coverage: each *_id column must have both not_null and unique tests.
+    # Check both the inline data_tests field (dbt <1.8) and the test-node index (dbt 1.8+).
     pk_pattern = re.compile(r"_id$")
     pks_found = 0
     pks_covered = 0
-    for m in models.values():
+    for model_uid, m in models.items():
         for col_name, col in m.get("columns", {}).items():
-            if pk_pattern.search(col_name):
-                pks_found += 1
-                tests = [t.get("name", "") if isinstance(t, dict) else str(t)
-                         for t in col.get("data_tests", col.get("tests", []))]
-                has_not_null = any("not_null" in t for t in tests)
-                has_unique = any("unique" in t for t in tests)
-                if has_not_null and has_unique:
-                    pks_covered += 1
+            if not pk_pattern.search(col_name):
+                continue
+            pks_found += 1
+            # Try inline field first (dbt <1.8), then test-node index (dbt 1.8+)
+            inline = [t.get("name", "") if isinstance(t, dict) else str(t)
+                      for t in col.get("data_tests", col.get("tests", []))]
+            test_names = set(inline) | pk_test_index.get((model_uid, col_name), set())
+            if "not_null" in test_names and "unique" in test_names:
+                pks_covered += 1
     pk_pct = round(100 * pks_covered / pks_found, 1) if pks_found else 100.0
 
     # Naming violations

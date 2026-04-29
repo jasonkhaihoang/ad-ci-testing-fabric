@@ -183,7 +183,7 @@ def format_gate_0(compile_result: dict, build_empty_result: dict, schema_gate: d
         sg_cell = f"❌ {len(violations)} violation(s)"
 
     table = (
-        f"| Check | Result |\n|-------|--------|\n"
+        "| Check | Result |\n|-------|--------|\n"
         + _item(compile_result, "dbt compile")
         + _item(build_empty_result, "dbt build --empty")
         + f"| Schema gate | {sg_cell} |\n"
@@ -271,19 +271,59 @@ def _detail_scorecard(report: dict) -> str:
         parts.append(f"PK {pk}%")
     if violations > 0:
         parts.append(f"{violations} naming violations")
-    return " · ".join(parts) + " (need ≥80% / 0)"
+    return " · ".join(parts) + " (need ≥80% / 0)" if parts else "Failed"
 
 
 def _detail_compile(report: dict | None) -> str:
     if not report:
         return "⚠️ Unavailable"
-    return "Compiled successfully" if report.get("passed") else "Compilation failed"
+    if report.get("passed"):
+        return "Compiled successfully"
+    errors = report.get("errors", [])
+    if errors:
+        return f"Compilation failed — `{errors[0].get('model', 'unknown')}`"
+    return "Compilation failed"
 
 
 def _detail_build_empty(report: dict | None) -> str:
     if not report:
         return "⚠️ Unavailable"
-    return "Built successfully" if report.get("passed") else "Build failed"
+    if report.get("passed"):
+        return "Built successfully"
+    errors = report.get("errors", [])
+    if errors:
+        return f"Build failed — `{errors[0].get('model', 'unknown')}`"
+    return "Build failed"
+
+
+def _collapsible_dbt_errors(name: str, errors: list) -> str:
+    count = len(errors)
+    lines = []
+    for err in errors[:10]:
+        model = err.get("model", "unknown")
+        msg = (err.get("message") or "")[:200]
+        lines.append(f"- `{model}` — {msg}" if msg else f"- `{model}`")
+    if count > 10:
+        lines.append(f"- … and {count - 10} more")
+    return (
+        f"<details>\n<summary>{name} — failing models</summary>\n\n"
+        + "\n".join(lines)
+        + "\n\n</details>\n"
+    )
+
+
+def _collapsible_compile(report: dict | None) -> str:
+    if not report:
+        return ""
+    errors = report.get("errors", [])
+    return _collapsible_dbt_errors("dbt compile", errors) if errors else ""
+
+
+def _collapsible_build_empty(report: dict | None) -> str:
+    if not report:
+        return ""
+    errors = report.get("errors", [])
+    return _collapsible_dbt_errors("dbt build --empty", errors) if errors else ""
 
 
 def _detail_schema_gate(report: dict | None) -> str:
@@ -344,22 +384,18 @@ def _collapsible_scorecard(report: dict) -> str:
     desc = report.get("description_coverage_pct", 0)
     col = report.get("column_coverage_pct", 0)
     pk = report.get("pk_test_coverage_pct", 0)
-    violations_count = report.get("naming_violation_count", 0)
+    violations = report.get("naming_violation_count", 0)
     model_count = report.get("model_count", 0)
     checks = [
         ("Model descriptions", desc >= 80, f"{desc}% (need ≥80%)"),
         ("Column descriptions", col >= 80, f"{col}% (need ≥80%)"),
         ("PK test coverage", pk >= 80, f"{pk}% (need ≥80%)"),
-        ("Naming conventions", violations_count == 0, f"{violations_count} violations (need 0)"),
+        ("Naming conventions", violations == 0, f"{violations} violations (need 0)"),
     ]
     rows = "\n".join(f"| {c} | {icon(p)} | {v} |" for c, p, v in checks)
-    body = f"| Metric | Status | Value |\n|--------|--------|-------|\n{rows}\n\n"
-    violations_list = report.get("naming_violations", [])
-    if violations_list:
-        body += _format_naming_violations_table(violations_list)
     return (
         f"<details>\n<summary>dbt Scorecard — {model_count} model(s) analysed</summary>\n\n"
-        f"{body}</details>\n"
+        f"| Metric | Status | Value |\n|--------|--------|-------|\n{rows}\n\n</details>\n"
     )
 
 
@@ -430,6 +466,8 @@ def build_details_comment(
     ]
 
     for collapsible in [
+        _collapsible_compile(compile_result) if has_gate_0 else "",
+        _collapsible_build_empty(build_empty_result) if has_gate_0 else "",
         _collapsible_ruff(ruff),
         _collapsible_sqlfluff(sqlfluff),
         _collapsible_gitleaks(gitleaks),

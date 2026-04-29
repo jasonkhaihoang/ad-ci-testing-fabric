@@ -29,13 +29,32 @@ def get_pr_changed_files(repo: str, base_sha: str, head_sha: str) -> set[str]:
     return set(lines) if lines else set()
 
 
-def check_model(node: dict) -> list[str]:
+def _build_model_test_index(nodes: dict) -> set[str]:
+    """Return a set of model unique_ids that have at least one associated test node.
+
+    dbt 1.8+ stores tests as separate nodes with `attached_node`; the model node's
+    own `data_tests` / `tests` field is no longer populated.
+    """
+    tested = set()
+    for node in nodes.values():
+        if node.get("resource_type") in ("test", "unit_test"):
+            attached = node.get("attached_node") or node.get("model")
+            if attached:
+                tested.add(attached)
+    return tested
+
+
+def check_model(node: dict, tested_model_ids: set | None = None) -> list[str]:
     """Return list of rule violation names for a single model node."""
     issues = []
     if not node.get("description", "").strip():
         issues.append("missing_description")
-    tests = node.get("data_tests", node.get("tests", []))
-    if not tests:
+    # Check both the inline data_tests field (dbt <1.8) and the separate test nodes (dbt 1.8+)
+    inline_tests = node.get("data_tests", node.get("tests", []))
+    has_tests = bool(inline_tests) or (
+        tested_model_ids is not None and node.get("unique_id") in tested_model_ids
+    )
+    if not has_tests:
         issues.append("missing_tests")
     owner = node.get("config", {}).get("meta", {}).get("owner", "")
     if not str(owner).strip():
@@ -46,6 +65,7 @@ def check_model(node: dict) -> list[str]:
 def run_gate(manifest: dict, changed_files: set[str]) -> dict:
     """Evaluate schema rules for every model whose source file is in changed_files."""
     nodes = manifest.get("nodes", {})
+    tested_model_ids = _build_model_test_index(nodes)
     violations = []
     models_evaluated = 0
 
@@ -55,7 +75,7 @@ def run_gate(manifest: dict, changed_files: set[str]) -> dict:
         if node.get("original_file_path", "") not in changed_files:
             continue
         models_evaluated += 1
-        issues = check_model(node)
+        issues = check_model(node, tested_model_ids)
         if issues:
             violations.append({
                 "model": node.get("name", ""),

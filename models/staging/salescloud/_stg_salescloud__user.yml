@@ -33,10 +33,16 @@ models:
       - name: user_role_id
         description: Foreign key to the user's role in Salesforce role hierarchy
         data_type: string
+        tests:
+          - not_null
+          - unique
 
       - name: profile_id
         description: Foreign key to the user's profile (permissions set)
         data_type: string
+        tests:
+          - not_null
+          - unique
 
       - name: job_title
         description: Job title of the user

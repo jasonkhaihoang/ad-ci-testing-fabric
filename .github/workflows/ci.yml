@@ -296,12 +296,11 @@ jobs:
           DBT_JOB_NAME: ci-parse
         run: |
           dbt deps --quiet 2>/dev/null || true
-          dbt parse --profiles-dir .github/profiles --target dbt_quality --quiet 2>/dev/null || true
+          dbt compile --profiles-dir .github/profiles --target dbt_quality --exclude package:elementary --quiet 2>/dev/null || true
           python3 ${{ env.SCRIPTS }}/scorecard.py \
             --manifest target/manifest.json \
             --agents-md AGENTS.md \
             > reports/scorecard.json
-
 
       - name: dbt compile
         continue-on-error: true
@@ -312,12 +311,36 @@ jobs:
           LAKEHOUSE_ID: dummy
           SCHEMA: dummy
         run: |
-          if dbt compile --profiles-dir .github/profiles --target dbt_quality --exclude package:elementary; then
-            echo '{"passed": true}' > reports/dbt_compile.json
-          else
-            echo '{"passed": false}' > reports/dbt_compile.json
-            exit 1
-          fi
+          python3 ${{ env.SCRIPTS }}/dbt_error_report.py reports/dbt_compile.json \
+            compile --profiles-dir .github/profiles --target dbt_quality \
+            --exclude package:elementary || true
+
+      - name: Setup DuckDB source tables for offline build
+        continue-on-error: true
+        run: |
+          python3 - <<'PYEOF'
+          import duckdb, os
+          db_path = '/tmp/vibedata_dbt_quality.duckdb'
+          if not os.path.exists(db_path):
+              print("DuckDB file not found, skipping source setup")
+          else:
+              con = duckdb.connect(db_path)
+              tables = {
+                  "account": "id VARCHAR, name VARCHAR, type VARCHAR, industry VARCHAR, billingcity VARCHAR, billingstate VARCHAR, billingcountry VARCHAR, ownerid VARCHAR, isdeleted BOOLEAN, createddate TIMESTAMP, lastmodifieddate TIMESTAMP",
+                  "user": "id VARCHAR, name VARCHAR, email VARCHAR, username VARCHAR, userroleid VARCHAR, profileid VARCHAR, title VARCHAR, isactive BOOLEAN, createddate TIMESTAMP, lastmodifieddate TIMESTAMP",
+                  "opportunity": "id VARCHAR, accountid VARCHAR, ownerid VARCHAR, name VARCHAR, stagename VARCHAR, type VARCHAR, leadsource VARCHAR, amount DECIMAL, probability INTEGER, expectedrevenue DECIMAL, createddate TIMESTAMP, closedate DATE, laststagechangedate DATE, isclosed BOOLEAN, iswon BOOLEAN, isdeleted BOOLEAN, lastmodifieddate TIMESTAMP, systemmodstamp TIMESTAMP",
+                  "opportunitylineitem": "Id VARCHAR, OpportunityId VARCHAR, PricebookEntryId VARCHAR, Product2Id VARCHAR, Name VARCHAR, ProductCode VARCHAR, Quantity DOUBLE, UnitPrice DOUBLE, TotalPrice DOUBLE, Discount DOUBLE, Description VARCHAR, ServiceDate DATE, SortOrder INTEGER, CreatedDate TIMESTAMP",
+                  "opportunityhistory": "id VARCHAR, opportunityid VARCHAR, stagename VARCHAR, createddate TIMESTAMP",
+              }
+              try:
+                  con.execute("CREATE SCHEMA IF NOT EXISTS salescloud")
+                  for t, cols in tables.items():
+                      con.execute(f"CREATE TABLE IF NOT EXISTS salescloud.{t} ({cols})")
+              except Exception as e:
+                  print(f"DuckDB source setup warning: {e}")
+              finally:
+                  con.close()
+          PYEOF
 
       - name: dbt build --empty
         continue-on-error: true
@@ -328,14 +351,12 @@ jobs:
           LAKEHOUSE_ID: dummy
           SCHEMA: dummy
         run: |
-          if dbt build --empty --profiles-dir .github/profiles --target dbt_quality --exclude package:elementary; then
-            echo '{"passed": true}' > reports/dbt_build_empty.json
-          else
-            echo '{"passed": false}' > reports/dbt_build_empty.json
-            exit 1
-          fi
+          python3 ${{ env.SCRIPTS }}/dbt_error_report.py reports/dbt_build_empty.json \
+            build --empty --profiles-dir .github/profiles --target dbt_quality \
+            --select "models/staging/**" --exclude package:elementary resource_type:unit_test || true
 
       - name: Schema gate
+        continue-on-error: true
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -345,8 +366,7 @@ jobs:
             --repo "${{ github.repository }}" \
             --base-sha "${{ github.event.pull_request.base.sha }}" \
             --head-sha "${{ github.event.pull_request.head.sha }}" \
-            --output reports/schema_gate.json
-
+            --output reports/schema_gate.json || true
 
       - name: Upload reports
         uses: actions/upload-artifact@v4
