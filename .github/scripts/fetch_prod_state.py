@@ -185,8 +185,31 @@ def fetch_greenfield() -> None:
     head_sha = os.environ.get("HEAD_SHA", "")
     print("⚠️  No prod manifest available — running dbt parse for greenfield fallback.", flush=True)
 
+    # `dbt parse` requires `dbt_packages/` to resolve cross-package refs.
+    # Best-effort: failures here don't abort — `dbt parse` will surface a
+    # clearer error if a package is genuinely missing.
+    deps = subprocess.run(
+        ["dbt", "deps", "--profiles-dir", ".github/profiles", "--target", "dbt_quality"],
+        capture_output=True, text=True,
+    )
+    if deps.returncode != 0:
+        print(
+            f"::warning::dbt deps failed (exit {deps.returncode}); "
+            f"continuing to dbt parse anyway. stdout/stderr (first 300 chars): "
+            f"{(deps.stdout + deps.stderr)[:300]}",
+            flush=True,
+        )
+
+    # Match the static-analysis job: exclude elementary (heavy + not relevant for state).
+    # Drop --quiet so any failure carries a diagnostic message — dbt writes parse
+    # errors to stdout which --quiet would otherwise swallow.
     result = subprocess.run(
-        ["dbt", "parse", "--profiles-dir", ".github/profiles", "--target", "dbt_quality", "--quiet"],
+        [
+            "dbt", "parse",
+            "--profiles-dir", ".github/profiles",
+            "--target", "dbt_quality",
+            "--exclude", "package:elementary",
+        ],
         capture_output=True, text=True,
     )
 
@@ -199,9 +222,11 @@ def fetch_greenfield() -> None:
         return
 
     if result.returncode != 0:
+        # dbt prints parse errors to stdout (not stderr); include both.
         print(
-            f"::warning::dbt parse failed (exit {result.returncode}): "
-            f"{result.stderr[:300]}",
+            f"::warning::dbt parse failed (exit {result.returncode}). "
+            f"stdout/stderr (first 500 chars): "
+            f"{(result.stdout + result.stderr)[:500]}",
             flush=True,
         )
     # Minimal manifest so downstream jobs have a valid file to upload
