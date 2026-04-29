@@ -69,13 +69,14 @@ dbt_fab_spark:
       connect_timeout: 500
       threads: 10
 
-    # ci-ephemeral: target used by the CI-injected notebook for Slim CI
+    # ephemeral_ci: target used by the CI-injected notebook for Slim CI
     # (`dbt build/test --select state:modified+ --defer --state {prod_state_path}`).
     # Points at the ephemeral workspace's lakehouse — workspace/lakehouse identifiers
     # are injected via env vars by the notebook Parameters cell (see inject_notebook.py).
     # Distinct from `ephemeral_dep` only in spark_config.name so capacity metrics can
     # separate CI runs from interactive developer dependency work.
-    ci-ephemeral:
+    # Override the target name (here and in ci-config.yml::ci_target) to rename.
+    ephemeral_ci:
       authentication: fabric_notebook
       endpoint: https://msitapi.fabric.microsoft.com/v1
       workspaceid: "{{ env_var('WORKSPACE_ID') }}"
