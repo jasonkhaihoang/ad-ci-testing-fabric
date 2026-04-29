@@ -205,15 +205,22 @@ def format_gate_0(compile_result: dict, build_empty_result: dict, schema_gate: d
     return gate_passed, section
 
 
-def build_comment(workspace_id: str, workspace_name: str, head_branch: str) -> str:
+def build_comment(workspace_id: str, workspace_name: str, head_branch: str, greenfield_fallback: bool = False) -> str:
     """Workspace notification comment — no static analysis section."""
     ws_url = FABRIC_WORKSPACE_URL.format(workspace_id=workspace_id)
+    greenfield_notice = ""
+    if greenfield_fallback:
+        greenfield_notice = (
+            "\n> ⚠️ **No prod manifest available** — Slim CI is falling back to full build. "
+            "Once a CD workflow publishes a `prod-manifest` artifact from `main`, "
+            "Slim CI will use it automatically.\n"
+        )
     return f"""{COMMENT_MARKER}
 ## Ephemeral Workspace Ready
 
 **Workspace:** [{workspace_name}]({ws_url})
 **Branch:** `{head_branch}`
-
+{greenfield_notice}
 ### Developer Checklist
 - [ ] Open the workspace and run the notebook cells in order:
   - **Cell: Clone** — `dbt clone --select state:modified+` *(resets D and D+ to prod state)*
@@ -522,6 +529,7 @@ def main():
     head_branch = os.environ.get("HEAD_BRANCH", "")
     pr_number = os.environ.get("PR_NUMBER", "")
     repo = os.environ.get("REPO", "")
+    greenfield_fallback = os.environ.get("GREENFIELD_FALLBACK", "").lower() == "true"
 
     ruff = load_report("reports/ruff.json")
     sqlfluff_report = load_report("reports/sqlfluff.json")
@@ -531,7 +539,7 @@ def main():
     build_empty_result = load_report("reports/dbt_build_empty.json")
     schema_gate = load_report("reports/schema_gate.json")
 
-    workspace_comment = build_comment(workspace_id, workspace_name, head_branch)
+    workspace_comment = build_comment(workspace_id, workspace_name, head_branch, greenfield_fallback)
     details_comment = build_details_comment(
         ruff=ruff,
         sqlfluff=sqlfluff_report,

@@ -22,6 +22,7 @@ permissions:
   pull-requests: write
   id-token: write   # required for GitHub OIDC → Azure login
   statuses: write   # required for ci/gate-N commit status posting
+  actions: read     # required for gh run list / gh run download (artifact mode)
 
 env:
   PYTHON_VERSION: "3.11"
@@ -160,11 +161,69 @@ jobs:
           echo "ephemeral_name=${NAME}" >> "$GITHUB_OUTPUT"
           echo "Ephemeral workspace name: ${NAME}"
 
+  # ─── FETCH PROD STATE ────────────────────────────────────────────────────────
+  # Downloads prod-state/manifest.json for Slim CI deferral.
+  # Modes: artifact (gh run download from CD), onelake (Fabric UAMI), greenfield (dbt parse fallback).
+  fetch-prod-state:
+    if: github.event.action != 'closed'
+    needs: preflight
+    runs-on: ubuntu-latest
+    outputs:
+      greenfield_fallback: ${{ steps.fetch.outputs.greenfield_fallback }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: pip install pyyaml "dbt-core>=1.8" "dbt-duckdb>=1.8" --quiet
+
+      - name: Parse prod manifest mode
+        id: parse-mode
+        run: |
+          python3 - <<'EOF'
+          import yaml, os, sys
+          try:
+            with open("ci-config.yml") as f:
+              c = yaml.safe_load(f) or {}
+            mode = (c.get("prod_manifest_source") or {}).get("mode", "artifact")
+          except Exception:
+            mode = "artifact"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+            out.write(f"mode={mode}\n")
+          print(f"prod_manifest_source.mode={mode}")
+          EOF
+
+      - name: Login — Fabric UAMI (onelake mode only)
+        if: steps.parse-mode.outputs.mode == 'onelake'
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Fetch prod state
+        id: fetch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: python3 ${{ env.SCRIPTS }}/fetch_prod_state.py
+
+      - name: Upload prod-state artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-state-pr${{ github.event.pull_request.number }}
+          path: prod-state/
+          retention-days: 7
+
   # ─── PROVISION ────────────────────────────────────────────────────────────
   # 1. KV UAMI: fetch Fabric capacity ID + GitHub App config → GITHUB_ENV
   # 2. Fabric UAMI: find-or-create workspace + lakehouse, inject notebook
   provision:
-    needs: preflight
+    if: github.event.action != 'closed'
+    needs: [preflight, fetch-prod-state]
     runs-on: ubuntu-latest
     outputs:
       ephemeral_workspace_id: ${{ steps.provision.outputs.workspace_id }}
@@ -220,6 +279,26 @@ jobs:
             --workspace-id "${{ steps.provision.outputs.workspace_id }}" \
             --github-login "${{ github.event.pull_request.user.login }}"
 
+      - name: Download prod-state artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: prod-state-pr${{ github.event.pull_request.number }}
+          path: prod-state/
+        continue-on-error: true
+
+      - name: Upload prod-state manifest to ephemeral workspace OneLake
+        id: upload-prod-state
+        run: |
+          if [ -f prod-state/manifest.json ]; then
+            python3 ${{ env.SCRIPTS }}/fabric_api.py upload-file \
+              --workspace-id "${{ steps.provision.outputs.workspace_id }}" \
+              --lakehouse-id "${{ steps.provision.outputs.lakehouse_id }}" \
+              --local-path prod-state/manifest.json \
+              --remote-path Files/ci-artifacts/prod-state/manifest.json
+          else
+            echo "No prod-state/manifest.json found — skipping OneLake upload."
+          fi
+
       - name: Inject notebook into ephemeral workspace
         env:
           AZURE_KEYVAULT_URL: ${{ vars.AZURE_KEYVAULT_URL }}
@@ -230,6 +309,7 @@ jobs:
           HEAD_BRANCH: ${{ github.head_ref }}
           REPO_URL: ${{ github.event.repository.clone_url }}
           GH_APP_PEM_KV_NAME: ${{ vars.GH_APP_PEM_KV_NAME }}
+          PROD_STATE_ABFSS: ${{ steps.upload-prod-state.outputs.abfss_path }}
         run: python3 ${{ env.SCRIPTS }}/inject_notebook.py
 
   # ─── STATIC ANALYSIS ──────────────────────────────────────────────────────
@@ -465,7 +545,7 @@ jobs:
   # ─── NOTIFY ───────────────────────────────────────────────────────────────
   # Posts PR comment with workspace URL + scorecard. No Azure access needed.
   notify:
-    needs: [preflight, provision, static-analysis]
+    needs: [preflight, provision, static-analysis, fetch-prod-state]
     runs-on: ubuntu-latest
     if: always() && github.event.action != 'closed'
     steps:
@@ -493,6 +573,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           HEAD_BRANCH: ${{ github.head_ref }}
+          GREENFIELD_FALLBACK: ${{ needs.fetch-prod-state.outputs.greenfield_fallback }}
         run: python3 ${{ env.SCRIPTS }}/notify.py
 
   # ─── TEARDOWN ─────────────────────────────────────────────────────────────
