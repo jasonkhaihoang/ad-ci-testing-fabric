@@ -38,12 +38,14 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
 FABRIC_API = "https://api.fabric.microsoft.com/v1"
 POWERBI_API = "https://api.powerbi.com/v1.0/myorg"
 GITHUB_API = "https://api.github.com"
+ONELAKE_DFS = "https://onelake.dfs.fabric.microsoft.com"
 
 AAD_DOMAIN_DEFAULT = "eng.acceleratedata.ai"
 
@@ -67,6 +69,11 @@ def get_powerbi_token() -> str:
     Same UAMI session, no additional Azure permissions needed.
     """
     return _get_az_token("https://analysis.windows.net/powerbi/api")
+
+
+def get_storage_token() -> str:
+    """OneLake DFS API requires the Azure Storage audience."""
+    return _get_az_token("https://storage.azure.com")
 
 
 # ─── HTTP helpers ─────────────────────────────────────────────────────────────
@@ -273,6 +280,64 @@ def cmd_add_contributor(args):
     add_workspace_user(args.workspace_id, upn, token)
 
 
+# ─── OneLake Files upload ─────────────────────────────────────────────────────
+
+def _dfs_request(method: str, url: str, token: str, data: bytes = None, params: dict = None) -> None:
+    """Execute an ADLS Gen2 DFS REST API call; raises on non-2xx."""
+    if params:
+        url = f"{url}?{urllib.parse.urlencode(params)}"
+    # Always set Content-Length: ADLS Gen2 requires Content-Length: 0 on flush PATCH.
+    effective_data = data if data is not None else b""
+    req = urllib.request.Request(url, data=effective_data, method=method)
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Content-Length", str(len(effective_data)))
+    try:
+        with urllib.request.urlopen(req):
+            pass
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode(errors="replace")
+        print(f"HTTP {e.code} {method} {url}: {body_text}", file=sys.stderr)
+        raise
+
+
+def upload_onelake_file(
+    workspace_id: str, lakehouse_id: str, local_path: str, remote_path: str, token: str
+) -> str:
+    """Upload a local file to OneLake via the ADLS Gen2 DFS three-step protocol.
+
+    Steps: CREATE (PUT ?resource=file) → APPEND → FLUSH.
+    Returns the ABFSS URI of the uploaded file.
+    """
+    if ".." in remote_path.split("/"):
+        raise ValueError(f"remote_path must not contain '..' components: {remote_path!r}")
+
+    url = f"{ONELAKE_DFS}/{workspace_id}/{lakehouse_id}/{remote_path}"
+
+    with open(local_path, "rb") as f:
+        data = f.read()
+    size = len(data)
+
+    _dfs_request("PUT", url, token, params={"resource": "file"})
+    print(f"OneLake file path created: {remote_path}", flush=True)
+
+    _dfs_request("PATCH", url, token, data=data, params={"action": "append", "position": "0"})
+    print(f"Data appended ({size} bytes).", flush=True)
+
+    _dfs_request("PATCH", url, token, params={"action": "flush", "position": str(size)})
+    print("File flushed and committed.", flush=True)
+
+    return f"abfss://{workspace_id}@onelake.dfs.fabric.microsoft.com/{lakehouse_id}/{remote_path}"
+
+
+def cmd_upload_file(args):
+    token = get_storage_token()
+    abfss = upload_onelake_file(
+        args.workspace_id, args.lakehouse_id, args.local_path, args.remote_path, token
+    )
+    write_github_output("abfss_path", abfss)
+    print(f"ABFSS URI: {abfss}", flush=True)
+
+
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 def main():
@@ -284,12 +349,18 @@ def main():
     p = sub.add_parser("add-contributor")
     p.add_argument("--workspace-id", required=True)
     p.add_argument("--github-login", required=True)
+    p2 = sub.add_parser("upload-file")
+    p2.add_argument("--workspace-id", required=True)
+    p2.add_argument("--lakehouse-id", required=True)
+    p2.add_argument("--local-path", required=True)
+    p2.add_argument("--remote-path", required=True)
     args = parser.parse_args()
     {
         "provision": cmd_provision,
         "teardown": cmd_teardown,
         "cleanup": cmd_cleanup,
         "add-contributor": cmd_add_contributor,
+        "upload-file": cmd_upload_file,
     }[args.command](args)
 
 

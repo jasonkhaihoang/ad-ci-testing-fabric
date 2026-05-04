@@ -196,11 +196,23 @@ def substitute_parameters_cell(notebook: dict) -> dict:
     github_installation_id = os.environ.get("GH_INSTALLATION_ID_KV_NAME", "")
     github_pem_secret = os.environ.get("GH_APP_PEM_KV_NAME", "")
     vault_url = os.environ.get("AZURE_KEYVAULT_URL", "")
+    # PROD_STATE_ABFSS is set by the provision job after uploading manifest.json to OneLake.
+    # Falls back to ./prod-state when unset OR empty (GitHub Actions outputs empty string for
+    # unset step outputs, so we must guard against both cases).
+    prod_state_abfss = os.environ.get("PROD_STATE_ABFSS", "").strip() or "./prod-state"
+    # CI_TARGET is the dbt profile target name used by Slim CI Build/Test/Clone commands.
+    # Sourced from ci-config.yml::ci_target via preflight output. Defaults to "ephemeral_ci"
+    # when omitted; domain repos can override to match their own profiles.yml convention.
+    ci_target = os.environ.get("CI_TARGET", "").strip() or "ephemeral_ci"
 
-    # Build the substituted parameters cell source
+    # Build the substituted parameters cell source.
+    # The command uses notebook-runtime f-strings ({prod_state_path}) — the braces are
+    # escaped here so inject_notebook.py does not substitute them at injection time.
     new_params = [
         "# Parameters — injected by CI (do not edit manually)\n",
-        'command = ["dbt deps", "dbt build --select state:modified+ --defer --state ./prod-state --target prod", "dbt test --select state:modified+ --store-failures --target prod"]\n',
+        f'prod_state_path = "{prod_state_abfss}"\n',
+        f'ci_target = "{ci_target}"\n',
+        'command = ["dbt deps", f"dbt build --select state:modified+ --defer --state {prod_state_path} --target {ci_target}", f"dbt test --select state:modified+ --store-failures --target {ci_target}"]\n',
         f'repo_url = "{repo_url}"\n',
         f'repo_branch = "{branch}"\n',
         f'github_app_id = "{github_app_id}"\n',
@@ -268,7 +280,7 @@ def insert_clone_cell(notebook: dict, params_idx: int) -> dict:
             "from dbt.adapters.fabricspark.notebook import run_dbt_job, DbtJobConfig, RepoConfig, ConnectionConfig\n",
             "\n",
             "clone_config = DbtJobConfig(\n",
-            '    command=["dbt deps", "dbt clone --select state:modified+ --defer --state ./prod-state --target prod"],\n',
+            '    command=["dbt deps", f"dbt clone --select state:modified+ --defer --state {prod_state_path} --target {ci_target}"],\n',
             "    repo=RepoConfig(\n",
             "        url=repo_url,\n",
             "        branch=repo_branch,\n",
