@@ -180,6 +180,8 @@ def _run_dbt_ls() -> List[str]:
             "--resource-type", "model", "snapshot",
             "--state", "./prod-state",
             "--output", "json",
+            "--profiles-dir", ".github/profiles",
+            "--target", "dbt_quality",
         ],
         capture_output=True, text=True,
     )
