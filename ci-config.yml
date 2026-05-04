@@ -20,8 +20,6 @@ notebook_glob: "intents/**/*.ipynb"         # Glob pattern to find the dbt noteb
 # Defaults to "ephemeral_ci" when omitted.
 # ci_target: ephemeral_ci
 
-# prod_manifest_source configures how the CI pipeline fetches the production dbt manifest
-# for Slim CI (dbt build --defer --state). If omitted, greenfield fallback is used.
 prod_manifest_source:
   mode: artifact
   workflow: publish-prod-manifest.yml
