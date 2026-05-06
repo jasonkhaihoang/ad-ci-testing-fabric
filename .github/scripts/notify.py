@@ -205,6 +205,42 @@ def format_gate_0(compile_result: dict, build_empty_result: dict, schema_gate: d
     return gate_passed, section
 
 
+_ZERO_STATE_COPY = {
+    "greenfield": "🔗 No shortcuts derived — greenfield mode (no prod manifest available)",
+    "no-modified-models": "🔗 No shortcuts derived — PR has no modified dbt models",
+    "no-upstreams": "🔗 No shortcuts derived — modified models have no prod upstreams",
+}
+
+
+def format_shortcut_seeding(report: dict | None) -> str:
+    """Phase 3 PR comment section. Returns empty string when the report is missing."""
+    if not report:
+        return ""
+
+    derived = report.get("derived") or []
+    zero_state = report.get("zero_state")
+
+    if derived:
+        aliases = "\n".join(entry.get("alias", "") for entry in derived)
+        created = report.get("created")
+        already = report.get("already_existed")
+        counts = ""
+        if created is not None or already is not None:
+            counts = f" ({created or 0} created, {already or 0} already existed)"
+        return (
+            f"### 🔗 Seeded {len(derived)} shortcuts from prod{counts}\n\n"
+            f"<details>\n<summary>Shortcut aliases</summary>\n\n"
+            f"{aliases}\n\n"
+            f"</details>\n"
+        )
+
+    copy = _ZERO_STATE_COPY.get(zero_state)
+    if copy:
+        return f"### {copy}\n"
+
+    return ""
+
+
 def build_comment(workspace_id: str, workspace_name: str, head_branch: str, greenfield_fallback: bool = False) -> str:
     """Workspace notification comment — no static analysis section."""
     ws_url = FABRIC_WORKSPACE_URL.format(workspace_id=workspace_id)
@@ -430,6 +466,7 @@ def build_details_comment(
     compile_result: dict | None = None,
     build_empty_result: dict | None = None,
     schema_gate: dict | None = None,
+    shortcut_seeding: dict | None = None,
 ) -> str:
     """Gate 0 — Static Analysis comment: unified table + collapsible drill-downs."""
     ruff_passed, _ = format_ruff(ruff)
@@ -483,6 +520,10 @@ def build_details_comment(
     ]:
         if collapsible:
             parts.append(collapsible + "\n")
+
+    shortcut_section = format_shortcut_seeding(shortcut_seeding)
+    if shortcut_section:
+        parts.append(shortcut_section + "\n")
 
     return "".join(parts)
 
@@ -538,6 +579,7 @@ def main():
     compile_result = load_report("reports/dbt_compile.json")
     build_empty_result = load_report("reports/dbt_build_empty.json")
     schema_gate = load_report("reports/schema_gate.json")
+    shortcut_seeding = load_report("reports/shortcut_seeding.json")
 
     workspace_comment = build_comment(workspace_id, workspace_name, head_branch, greenfield_fallback)
     details_comment = build_details_comment(
@@ -548,6 +590,7 @@ def main():
         compile_result=compile_result,
         build_empty_result=build_empty_result,
         schema_gate=schema_gate,
+        shortcut_seeding=shortcut_seeding,
     )
 
     workspace_comment_id = _find_comment_by_marker(COMMENT_MARKER, pr_number, repo)

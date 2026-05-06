@@ -2,7 +2,7 @@ version: 2
 
 sources:
   - name: salescloud
-    schema: salescloud
+    schema: raw
     tables:
       - name: opportunity
         description: Salesforce opportunity records representing sales pipeline

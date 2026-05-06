@@ -30,6 +30,7 @@ Optional env vars (add-contributor):
                       construction. Useful when GitHub login does not match AAD UPN
                       prefix (e.g. personal GitHub accounts not provisioned via SSO).
 """
+from __future__ import annotations
 
 import argparse
 import json
@@ -79,7 +80,7 @@ def get_storage_token() -> str:
 # ─── HTTP helpers ─────────────────────────────────────────────────────────────
 
 def fabric_request(method: str, path: str, token: str, body: dict = None, retries: int = 3):
-    """Make a Fabric REST API call with retry on 429/503."""
+    """Make a Fabric REST API call with retry on 429/500/503."""
     url = f"{FABRIC_API}{path}"
     data = json.dumps(body).encode() if body else None
     req = urllib.request.Request(url, data=data, method=method)
@@ -92,9 +93,9 @@ def fabric_request(method: str, path: str, token: str, body: dict = None, retrie
                 raw = resp.read()
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as e:
-            if e.code in (429, 503) and attempt < retries - 1:
-                retry_after = int(e.headers.get("Retry-After", 5))
-                print(f"Rate limited, retrying in {retry_after}s…", flush=True)
+            if e.code in (429, 500, 503) and attempt < retries - 1:
+                retry_after = int(e.headers.get("Retry-After", 5)) if e.code != 500 else 1
+                print(f"HTTP {e.code}, retrying in {retry_after}s…", flush=True)
                 time.sleep(retry_after)
                 continue
             body_text = e.read().decode(errors="replace")
@@ -338,6 +339,115 @@ def cmd_upload_file(args):
     print(f"ABFSS URI: {abfss}", flush=True)
 
 
+# ─── Shortcut seeding ─────────────────────────────────────────────────────────
+
+SHORTCUT_REPORT_PATH = "reports/shortcut_seeding.json"
+
+
+def _build_shortcut_body(entry: dict) -> dict:
+    """Pure: derive the Fabric Shortcuts API request body from a manifest entry."""
+    return {
+        "name": entry["alias"],
+        "path": "Tables",
+        "target": {
+            "oneLake": {
+                "workspaceId": entry["source_workspace_id"],
+                "itemId": entry["source_lakehouse_id"],
+                "path": entry["source_path"],
+            }
+        },
+    }
+
+
+def _merge_seeding_report(existing: dict, created: int, already_existed: int) -> dict:
+    """Pure: merge counts into the existing report, preserving any other keys
+    (e.g. `derived`, `zero_state` written by Slice 1)."""
+    merged = dict(existing)
+    merged["created"] = created
+    merged["already_existed"] = already_existed
+    return merged
+
+
+def _write_seeding_report(report_path: str, created: int, already_existed: int) -> None:
+    """Read-modify-write the shortcut-seeding report, preserving Slice 1 keys."""
+    existing: dict = {}
+    if os.path.exists(report_path):
+        with open(report_path) as f:
+            try:
+                existing = json.load(f)
+            except json.JSONDecodeError:
+                existing = {}
+    merged = _merge_seeding_report(existing, created, already_existed)
+    os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
+    with open(report_path, "w") as f:
+        json.dump(merged, f, indent=2)
+
+
+def seed_shortcuts(
+    from_file: str,
+    workspace_id: str,
+    lakehouse_id: str,
+    token: str,
+    report_path: str = SHORTCUT_REPORT_PATH,
+) -> None:
+    """Read derived shortcuts list and POST each to the Fabric Shortcuts API.
+
+    Per-entry behaviour:
+      * 201 Created → success counted toward `created`.
+      * 409 Conflict → idempotent; counted toward `already_existed`.
+      * 403 Forbidden → SystemExit with alias + source path + Viewer-on-prod hint.
+      * 404 Not Found → SystemExit with alias + source path; halts further entries.
+      * Other errors (incl. 500 after fabric_request retry exhaustion) → SystemExit
+        with the alias.
+
+    Updates `report_path` with merged `{created, already_existed}` counts; preserves
+    `derived`/`zero_state` keys written by Slice 1 (read-modify-write).
+    """
+    with open(from_file) as f:
+        entries = json.load(f)
+
+    if not entries:
+        print("No shortcuts to seed", flush=True)
+        return
+
+    created = 0
+    already_existed = 0
+    api_path = f"/workspaces/{workspace_id}/items/{lakehouse_id}/shortcuts"
+
+    for entry in entries:
+        body = _build_shortcut_body(entry)
+        try:
+            fabric_request("POST", api_path, token, body)
+            created += 1
+            print(f"Created shortcut: {entry['alias']}", flush=True)
+        except urllib.error.HTTPError as e:
+            if e.code == 409:
+                already_existed += 1
+                print(f"Shortcut already exists: {entry['alias']}", flush=True)
+                continue
+            if e.code == 403:
+                raise SystemExit(
+                    f"Forbidden creating shortcut '{entry['alias']}' for source "
+                    f"'{entry['source_path']}'. The Fabric UAMI must have the "
+                    "Viewer role on the production workspace."
+                )
+            if e.code == 404:
+                raise SystemExit(
+                    f"Source not found for shortcut '{entry['alias']}': "
+                    f"'{entry['source_path']}'."
+                )
+            raise SystemExit(
+                f"Failed creating shortcut '{entry['alias']}' (HTTP {e.code})."
+            )
+
+    _write_seeding_report(report_path, created, already_existed)
+
+
+def cmd_seed_shortcuts(args):
+    token = get_fabric_token()
+    seed_shortcuts(args.from_file, args.workspace_id, args.lakehouse_id, token)
+
+
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 def main():
@@ -354,6 +464,10 @@ def main():
     p2.add_argument("--lakehouse-id", required=True)
     p2.add_argument("--local-path", required=True)
     p2.add_argument("--remote-path", required=True)
+    p3 = sub.add_parser("seed-shortcuts")
+    p3.add_argument("--from-file", required=True)
+    p3.add_argument("--workspace-id", required=True)
+    p3.add_argument("--lakehouse-id", required=True)
     args = parser.parse_args()
     {
         "provision": cmd_provision,
@@ -361,6 +475,7 @@ def main():
         "cleanup": cmd_cleanup,
         "add-contributor": cmd_add_contributor,
         "upload-file": cmd_upload_file,
+        "seed-shortcuts": cmd_seed_shortcuts,
     }[args.command](args)
 
 

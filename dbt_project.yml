@@ -26,10 +26,18 @@ models:
   sales_pipeline:
     staging:
       +materialized: view
+      +schema: stg
     intermediate:
       +materialized: ephemeral
     marts:
       +materialized: table
+      +schema: mrt
   elementary:
     +schema: elementary
     +tags: ["elementary"]
+
+seeds:
+  sales_pipeline:
+    raw:
+      +schema: raw
+      +quote_columns: false

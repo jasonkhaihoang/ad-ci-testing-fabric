@@ -15,8 +15,11 @@ prod_schema: <string>                   # Production schema name (e.g. sales_dat
 
 notebook_glob: "intents/**/*.ipynb"         # Glob pattern to find the dbt notebook
 
-# prod_manifest_source configures how the CI pipeline fetches the production dbt manifest
-# for Slim CI (dbt build --defer --state). If omitted, greenfield fallback is used.
+# Optional. dbt profile target name used by Slim CI Build / Test / Clone commands
+# in the injected notebook. Must match an `outputs:` entry in your profiles.yml.
+# Defaults to "ephemeral_ci" when omitted.
+# ci_target: ephemeral_ci
+
 prod_manifest_source:
   mode: artifact
   workflow: publish-prod-manifest.yml
