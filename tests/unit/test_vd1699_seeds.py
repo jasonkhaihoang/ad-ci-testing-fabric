@@ -63,7 +63,7 @@ def test_user_csv_has_required_columns():
 
 
 def test_opportunitylineitem_csv_has_required_columns():
-    # opportunitylineitem uses mixed-case headers — check exact case
+    # opportunitylineitem uses Salesforce API mixed case (e.g. OpportunityId, not opportunityid)
     headers = _csv_headers("opportunitylineitem")
     required = [
         "Id", "OpportunityId", "PricebookEntryId", "Product2Id", "Name",
@@ -96,6 +96,13 @@ def test_account_ownerids_present_in_user_csv():
     for row in _csv_rows("account"):
         assert row["ownerid"] in user_ids, \
             f"account.ownerid '{row['ownerid']}' not found in user.csv"
+
+
+def test_opportunity_ownerids_present_in_user_csv():
+    user_ids = {r["id"] for r in _csv_rows("user")}
+    for row in _csv_rows("opportunity"):
+        assert row["ownerid"] in user_ids, \
+            f"opportunity.ownerid '{row['ownerid']}' not found in user.csv"
 
 
 def test_opportunity_accountids_present_in_account_csv():
