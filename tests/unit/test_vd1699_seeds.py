@@ -33,8 +33,10 @@ def test_csv_exists_for_every_declared_source_table():
 def test_opportunity_csv_has_required_columns():
     headers = _csv_headers("opportunity")
     required = [
-        "id", "accountid", "ownerid", "name", "stagename", "amount",
-        "closedate", "isclosed", "iswon", "isdeleted",
+        "id", "accountid", "ownerid", "name", "stagename", "type", "leadsource",
+        "amount", "probability", "expectedrevenue", "createddate", "closedate",
+        "laststagechangedate", "isclosed", "iswon", "isdeleted",
+        "lastmodifieddate", "systemmodstamp",
     ]
     for col in required:
         assert col in headers, f"opportunity.csv missing column: {col}"
@@ -42,21 +44,32 @@ def test_opportunity_csv_has_required_columns():
 
 def test_account_csv_has_required_columns():
     headers = _csv_headers("account")
-    required = ["id", "name", "ownerid", "isdeleted", "createddate"]
+    required = [
+        "id", "name", "type", "industry", "billingcity", "billingstate",
+        "billingcountry", "ownerid", "isdeleted", "createddate", "lastmodifieddate",
+    ]
     for col in required:
         assert col in headers, f"account.csv missing column: {col}"
 
 
 def test_user_csv_has_required_columns():
     headers = _csv_headers("user")
-    required = ["id", "name", "email", "username", "isactive"]
+    required = [
+        "id", "name", "email", "username", "userroleid", "profileid",
+        "title", "isactive", "createddate", "lastmodifieddate",
+    ]
     for col in required:
         assert col in headers, f"user.csv missing column: {col}"
 
 
 def test_opportunitylineitem_csv_has_required_columns():
-    headers = [h.lower() for h in _csv_headers("opportunitylineitem")]
-    required = ["id", "opportunityid", "quantity", "unitprice", "totalprice"]
+    # opportunitylineitem uses mixed-case headers — check exact case
+    headers = _csv_headers("opportunitylineitem")
+    required = [
+        "Id", "OpportunityId", "PricebookEntryId", "Product2Id", "Name",
+        "ProductCode", "Quantity", "UnitPrice", "TotalPrice", "Discount",
+        "Description", "ServiceDate", "SortOrder", "CreatedDate",
+    ]
     for col in required:
         assert col in headers, f"opportunitylineitem.csv missing column: {col}"
 
