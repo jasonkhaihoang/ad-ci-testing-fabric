@@ -180,6 +180,18 @@ jobs:
 
       - run: pip install pyyaml "dbt-core>=1.8" "dbt-duckdb>=1.8" --quiet
 
+      - name: Emit Gate 1 pending
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 ${{ env.SCRIPTS }}/emit_status.py \
+            --context "ci/gate-1" \
+            --state pending \
+            --description "Gate 1: fetching prod state" \
+            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
       - name: Parse prod manifest mode
         id: parse-mode
         run: |
@@ -218,6 +230,27 @@ jobs:
           name: prod-state-pr${{ github.event.pull_request.number }}
           path: prod-state/
           retention-days: 7
+
+      - name: Emit Gate 1 final status
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            STATE=success
+            DESC="Gate 1: prod state resolved"
+          else
+            STATE=failure
+            DESC="Gate 1: failed — see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+          python3 ${{ env.SCRIPTS }}/emit_status.py \
+            --context "ci/gate-1" \
+            --state "$STATE" \
+            --description "$DESC" \
+            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   # ─── PROVISION ────────────────────────────────────────────────────────────
   # 1. KV UAMI: fetch Fabric capacity ID + GitHub App config → GITHUB_ENV
@@ -299,36 +332,6 @@ jobs:
           else
             echo "No prod-state/manifest.json found — skipping OneLake upload."
           fi
-
-      - name: Install dbt and parse current branch
-        run: |
-          pip install "dbt-core>=1.8" "dbt-duckdb>=1.8" --quiet
-          dbt deps --quiet
-          dbt parse --profiles-dir .github/profiles --target dbt_quality --quiet
-
-      - name: Derive shortcuts from manifest
-        env:
-          PROD_WORKSPACE_ID: ${{ needs.preflight.outputs.prod_workspace_id }}
-          PROD_LAKEHOUSE_ID: ${{ needs.preflight.outputs.prod_lakehouse_id }}
-        run: |
-          mkdir -p reports
-          python3 ${{ env.SCRIPTS }}/derive_shortcuts.py --output shortcuts.json
-
-      - name: Seed shortcuts in ephemeral lakehouse
-        run: |
-          python3 ${{ env.SCRIPTS }}/fabric_api.py seed-shortcuts \
-            --from-file shortcuts.json \
-            --workspace-id "${{ steps.provision.outputs.workspace_id }}" \
-            --lakehouse-id "${{ steps.provision.outputs.lakehouse_id }}"
-
-      - name: Upload shortcut seeding report
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ci-reports-shortcuts-pr${{ github.event.pull_request.number }}
-          path: reports/shortcut_seeding.json
-          if-no-files-found: ignore
-          retention-days: 30
 
       - name: Inject notebook into ephemeral workspace
         env:
@@ -593,13 +596,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ci-reports-pr${{ github.event.pull_request.number }}
-          path: reports/
-        continue-on-error: true
-
-      - name: Download shortcut seeding report
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-reports-shortcuts-pr${{ github.event.pull_request.number }}
           path: reports/
         continue-on-error: true
 

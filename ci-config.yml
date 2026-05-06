@@ -5,23 +5,33 @@
 #
 # VD Studio populates this file automatically at domain setup time.
 
-domain: sales
+domain: <domain-name>                    # e.g. sales, finance, production
 
-prod_workspace_id: 7aeb9e12-8ad0-421d-82ad-262512491e16
-prod_workspace_name: vibedata-prd-sales-pipeline
-prod_lakehouse_id: fe90ede0-e379-446e-9e69-1b487dc71946
-prod_lakehouse_name: lh_prd_salespipeline
-prod_schema: mrt
+prod_workspace_id: <guid>               # Production Fabric workspace ID
+prod_workspace_name: <string>           # Production Fabric workspace display name
+prod_lakehouse_id: <guid>               # Production Fabric lakehouse ID
+prod_lakehouse_name: <string>           # Production Fabric lakehouse display name
+prod_schema: <string>                   # Production schema name (e.g. sales_datamart)
 
-notebook_glob: "intents/**/*.ipynb"
+notebook_glob: "intents/**/*.ipynb"         # Glob pattern to find the dbt notebook
 
 # Optional. dbt profile target name used by Slim CI Build / Test / Clone commands
 # in the injected notebook. Must match an `outputs:` entry in your profiles.yml.
 # Defaults to "ephemeral_ci" when omitted.
 # ci_target: ephemeral_ci
 
-prod_manifest_source:
-  mode: artifact
-  workflow: publish-prod-manifest.yml
-  artifact_name: prod-manifest
-  main_branch: main
+# prod_manifest_source configures how the CI pipeline fetches the production dbt manifest
+# for Slim CI (dbt build --defer --state). If omitted, greenfield fallback is used.
+#
+# prod_manifest_source:
+#   mode: artifact                    # artifact (default) or onelake (future — see design doc §4.5)
+#
+#   # artifact mode: downloads manifest.json from the latest successful CD workflow run on main.
+#   workflow: deploy-prod.yml         # CD workflow file name in this repo
+#   artifact_name: prod-manifest      # name of the GitHub Actions artifact containing manifest.json
+#   main_branch: main                 # branch to resolve the latest run from (default: main)
+#
+#   # onelake mode (future — post-CD, see design doc §4.5 ADR):
+#   # workspace_id: <prod-ws-guid>    # production Fabric workspace ID
+#   # lakehouse_id: <prod-lh-guid>    # production Fabric lakehouse ID
+#   # file_path: Files/ci-artifacts/prod-state/manifest.json
