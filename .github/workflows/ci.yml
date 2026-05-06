@@ -180,6 +180,18 @@ jobs:
 
       - run: pip install pyyaml "dbt-core>=1.8" "dbt-duckdb>=1.8" --quiet
 
+      - name: Emit Gate 1 pending
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 ${{ env.SCRIPTS }}/emit_status.py \
+            --context "ci/gate-1" \
+            --state pending \
+            --description "Gate 1: fetching prod state" \
+            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
       - name: Parse prod manifest mode
         id: parse-mode
         run: |
@@ -218,6 +230,27 @@ jobs:
           name: prod-state-pr${{ github.event.pull_request.number }}
           path: prod-state/
           retention-days: 7
+
+      - name: Emit Gate 1 final status
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            STATE=success
+            DESC="Gate 1: prod state resolved"
+          else
+            STATE=failure
+            DESC="Gate 1: failed — see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+          python3 ${{ env.SCRIPTS }}/emit_status.py \
+            --context "ci/gate-1" \
+            --state "$STATE" \
+            --description "$DESC" \
+            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   # ─── PROVISION ────────────────────────────────────────────────────────────
   # 1. KV UAMI: fetch Fabric capacity ID + GitHub App config → GITHUB_ENV
@@ -453,6 +486,11 @@ jobs:
               finally:
                   con.close()
           PYEOF
+
+      - name: dbt seed (populate raw schema for dbt build --empty)
+        continue-on-error: true
+        run: |
+          dbt seed --profiles-dir .github/profiles --target dbt_quality --quiet 2>/dev/null || true
 
       - name: dbt build --empty
         continue-on-error: true
