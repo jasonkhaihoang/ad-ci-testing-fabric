@@ -1,0 +1,6 @@
+id,name,email,username,userroleid,profileid,title,isactive,createddate,lastmodifieddate
+U001,Alice Johnson,alice.johnson@example.com,alice.johnson@example.com,R001,P001,Account Executive,true,2024-01-01T00:00:00Z,2024-01-01T00:00:00Z
+U002,Bob Smith,bob.smith@example.com,bob.smith@example.com,R001,P001,Account Executive,true,2024-01-01T00:00:00Z,2024-01-01T00:00:00Z
+U003,Carol White,carol.white@example.com,carol.white@example.com,R002,P001,Sales Manager,true,2024-01-01T00:00:00Z,2024-01-01T00:00:00Z
+U004,Dave Brown,dave.brown@example.com,dave.brown@example.com,R001,P001,Account Executive,true,2024-02-01T00:00:00Z,2024-02-01T00:00:00Z
+U005,Eve Davis,eve.davis@example.com,eve.davis@example.com,R001,P001,Account Executive,false,2024-03-01T00:00:00Z,2024-03-01T00:00:00Z
