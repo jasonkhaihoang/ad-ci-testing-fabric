@@ -487,6 +487,11 @@ jobs:
                   con.close()
           PYEOF
 
+      - name: dbt seed (populate raw schema for dbt build --empty)
+        continue-on-error: true
+        run: |
+          dbt seed --profiles-dir .github/profiles --target dbt_quality --quiet 2>/dev/null || true
+
       - name: dbt build --empty
         continue-on-error: true
         env:

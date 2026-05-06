@@ -2,6 +2,9 @@ version: 2
 
 models:
   - name: fct_pipeline
+    config:
+      meta:
+        owner: jason.khai.hoang@acceleratedata.ai
     description: |
       **Sales pipeline fact table** - the core analytical table for pipeline reporting and forecasting.
 
