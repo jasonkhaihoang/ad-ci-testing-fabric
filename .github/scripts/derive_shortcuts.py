@@ -74,11 +74,12 @@ def _node_table_name(node: dict) -> str:
     return node.get("alias") or node.get("name", "")
 
 
-def _is_ephemeral_model(node: dict) -> bool:
-    return (
-        node.get("resource_type") == "model"
-        and (node.get("config") or {}).get("materialized") == "ephemeral"
-    )
+def _is_non_physical_model(node: dict) -> bool:
+    """Views and ephemeral models have no physical Delta file in OneLake — skip them."""
+    if node.get("resource_type") != "model":
+        return False
+    materialized = (node.get("config") or {}).get("materialized", "")
+    return materialized in ("ephemeral", "view")
 
 
 def _shortcut_entry(
@@ -125,7 +126,7 @@ def derive_shortcuts(
     for mid in modified_unique_ids:
         all_upstreams |= walk_upstreams(current_manifest, mid)
 
-    # Filter: drop modified-set members, seeds, and ephemeral models.
+    # Filter: drop modified-set members, seeds, views, and ephemeral models.
     candidates: List[Tuple[str, dict]] = []
     for uid in all_upstreams:
         if uid in modified_set:
@@ -136,7 +137,7 @@ def derive_shortcuts(
         if node is None:
             # Unresolved node — skip; could be a test, exposure, or unknown type.
             continue
-        if _is_ephemeral_model(node):
+        if _is_non_physical_model(node):
             continue
         if not (uid.startswith("source.") or uid.startswith("snapshot.") or uid.startswith("model.")):
             continue
