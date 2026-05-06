@@ -46,3 +46,9 @@ def test_profiles_prod_workspaceid():
     profiles = _load_profiles()
     prod = profiles["dbt_fab_spark"]["outputs"]["prod"]
     assert prod["workspaceid"] == EXPECTED_WORKSPACE_ID
+
+
+def test_profiles_prod_lakehouseid():
+    profiles = _load_profiles()
+    prod = profiles["dbt_fab_spark"]["outputs"]["prod"]
+    assert prod["lakehouseid"] == EXPECTED_LAKEHOUSE_ID

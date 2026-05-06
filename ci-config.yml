@@ -1,3 +1,10 @@
+# Domain CI Configuration
+#
+# Copy this file to the root of your domain repo and fill in the values.
+# These are non-sensitive — do not store GUIDs as secrets, store them here.
+#
+# VD Studio populates this file automatically at domain setup time.
+
 domain: sales
 
 prod_workspace_id: 7aeb9e12-8ad0-421d-82ad-262512491e16
@@ -7,6 +14,11 @@ prod_lakehouse_name: lh_prd_salespipeline
 prod_schema: mrt
 
 notebook_glob: "intents/**/*.ipynb"
+
+# Optional. dbt profile target name used by Slim CI Build / Test / Clone commands
+# in the injected notebook. Must match an `outputs:` entry in your profiles.yml.
+# Defaults to "ephemeral_ci" when omitted.
+# ci_target: ephemeral_ci
 
 prod_manifest_source:
   mode: artifact
