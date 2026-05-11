@@ -18,38 +18,20 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import urllib.error
 import urllib.request
 
 import yaml
 
+import fabric_transport
+import runner_io
+
 
 ONELAKE_DFS = "https://onelake.dfs.fabric.microsoft.com"
-ONELAKE_STORAGE_RESOURCE = "https://storage.azure.com"
-
-
-# ─── Auth ─────────────────────────────────────────────────────────────────────
-
-def get_storage_token() -> str:
-    result = subprocess.run(
-        ["az", "account", "get-access-token", "--resource", ONELAKE_STORAGE_RESOURCE],
-        capture_output=True, text=True, check=True,
-    )
-    return json.loads(result.stdout)["accessToken"]
 
 
 # ─── Output helpers ───────────────────────────────────────────────────────────
-
-def write_github_output(key: str, value: str) -> None:
-    output_file = os.environ.get("GITHUB_OUTPUT")
-    if output_file:
-        with open(output_file, "a") as f:
-            f.write(f"{key}={value}\n")
-    else:
-        print(f"GITHUB_OUTPUT not set; {key}={value}", flush=True)
-
 
 def write_source_json(mode: str, source: str, head_sha: str) -> None:
     os.makedirs("prod-state", exist_ok=True)
@@ -74,7 +56,7 @@ def fetch_artifact_mode(cfg: dict) -> bool:
     head_sha = os.environ.get("HEAD_SHA", "")
 
     if not workflow:
-        print("::error::prod_manifest_source.workflow is required for artifact mode.", file=sys.stderr)
+        runner_io.error("prod_manifest_source.workflow is required for artifact mode.")
         return False
 
     result = subprocess.run(
@@ -90,16 +72,16 @@ def fetch_artifact_mode(cfg: dict) -> bool:
         capture_output=True, text=True,
     )
     if result.returncode != 0:
-        print(f"::warning::gh run list failed: {result.stderr.strip()}", flush=True)
+        runner_io.warning(f"gh run list failed: {result.stderr.strip()}")
         return False
 
     try:
         runs = json.loads(result.stdout)
     except ValueError:
-        print("::warning::gh run list returned invalid JSON — falling back to greenfield.", flush=True)
+        runner_io.warning("gh run list returned invalid JSON — falling back to greenfield.")
         return False
     if not runs:
-        print("::warning::No successful CD workflow runs found on main — falling back to greenfield.", flush=True)
+        runner_io.warning("No successful CD workflow runs found on main — falling back to greenfield.")
         return False
 
     run_id = runs[0]["databaseId"]
@@ -116,12 +98,12 @@ def fetch_artifact_mode(cfg: dict) -> bool:
             capture_output=True, text=True,
         )
         if dl_result.returncode != 0:
-            print(f"::warning::gh run download failed: {dl_result.stderr.strip()}", flush=True)
+            runner_io.warning(f"gh run download failed: {dl_result.stderr.strip()}")
             return False
 
         manifest_src = os.path.join(tmpdir, "manifest.json")
         if not os.path.exists(manifest_src):
-            print(f"::warning::manifest.json not found in artifact '{artifact_name}'.", flush=True)
+            runner_io.warning(f"manifest.json not found in artifact '{artifact_name}'.")
             return False
 
         os.makedirs("prod-state", exist_ok=True)
@@ -144,14 +126,13 @@ def fetch_onelake_mode(cfg: dict) -> bool:
     head_sha = os.environ.get("HEAD_SHA", "")
 
     if not all([workspace_id, lakehouse_id, file_path]):
-        print(
-            "::error::prod_manifest_source.workspace_id, lakehouse_id, and file_path "
-            "are all required for onelake mode.",
-            file=sys.stderr,
+        runner_io.error(
+            "prod_manifest_source.workspace_id, lakehouse_id, and file_path "
+            "are all required for onelake mode."
         )
         return False
 
-    token = get_storage_token()
+    token = fabric_transport.get_token("storage")
     url = f"{ONELAKE_DFS}/{workspace_id}/{lakehouse_id}/{file_path}"
     req = urllib.request.Request(url, method="GET")
     req.add_header("Authorization", f"Bearer {token}")
@@ -161,10 +142,7 @@ def fetch_onelake_mode(cfg: dict) -> bool:
             content = resp.read()
     except urllib.error.HTTPError as e:
         level = "404" if e.code == 404 else f"HTTP {e.code}"
-        print(
-            f"::warning::OneLake manifest fetch failed ({level}) — falling back to greenfield.",
-            flush=True,
-        )
+        runner_io.warning(f"OneLake manifest fetch failed ({level}) — falling back to greenfield.")
         return False
 
     os.makedirs("prod-state", exist_ok=True)
@@ -203,11 +181,10 @@ def fetch_greenfield() -> None:
         capture_output=True, text=True,
     )
     if deps.returncode != 0:
-        print(
-            f"::warning::dbt deps failed (exit {deps.returncode}). "
+        runner_io.warning(
+            f"dbt deps failed (exit {deps.returncode}). "
             f"stdout/stderr (first 300 chars): "
-            f"{(deps.stdout + deps.stderr)[:300]}",
-            flush=True,
+            f"{(deps.stdout + deps.stderr)[:300]}"
         )
 
     parse = subprocess.run(
@@ -221,11 +198,10 @@ def fetch_greenfield() -> None:
     )
     if parse.returncode != 0:
         # dbt prints parse errors to stdout (not stderr); include both.
-        print(
-            f"::warning::dbt parse failed (exit {parse.returncode}). "
+        runner_io.warning(
+            f"dbt parse failed (exit {parse.returncode}). "
             f"stdout/stderr (first 500 chars): "
-            f"{(parse.stdout + parse.stderr)[:500]}",
-            flush=True,
+            f"{(parse.stdout + parse.stderr)[:500]}"
         )
 
     # Always emit minimal manifest. Empty `nodes` makes every current-branch
@@ -240,6 +216,20 @@ def fetch_greenfield() -> None:
         },
         "nodes": {},
         "sources": {},
+        "macros": {},
+        "docs": {},
+        "exposures": {},
+        "metrics": {},
+        "groups": {},
+        "selectors": {},
+        "disabled": {},
+        "parent_map": {},
+        "child_map": {},
+        "group_map": {},
+        "saved_queries": {},
+        "semantic_models": {},
+        "unit_tests": {},
+        "functions": {},
     }
     with open("prod-state/manifest.json", "w") as f:
         json.dump(minimal, f, indent=2)
@@ -255,7 +245,7 @@ def fetch_greenfield() -> None:
 def load_config() -> dict:
     config_path = "ci-config.yml"
     if not os.path.exists(config_path):
-        print("::warning::ci-config.yml not found — using greenfield fallback.", flush=True)
+        runner_io.warning("ci-config.yml not found — using greenfield fallback.")
         return {}
     with open(config_path) as f:
         return yaml.safe_load(f) or {}
@@ -274,13 +264,13 @@ def main() -> None:
     elif mode == "onelake":
         success = fetch_onelake_mode(manifest_cfg)
     else:
-        print(f"::warning::Unknown prod_manifest_source.mode '{mode}' — using greenfield fallback.", flush=True)
+        runner_io.warning(f"Unknown prod_manifest_source.mode '{mode}' — using greenfield fallback.")
 
     if not success:
         fetch_greenfield()
-        write_github_output("greenfield_fallback", "true")
+        runner_io.set_output("greenfield_fallback", "true")
     else:
-        write_github_output("greenfield_fallback", "false")
+        runner_io.set_output("greenfield_fallback", "false")
 
     print("fetch-prod-state complete.", flush=True)
 

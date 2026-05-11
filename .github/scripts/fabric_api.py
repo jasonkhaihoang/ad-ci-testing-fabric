@@ -35,105 +35,47 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
+import fabric_transport
+import runner_io
 
-FABRIC_API = "https://api.fabric.microsoft.com/v1"
-POWERBI_API = "https://api.powerbi.com/v1.0/myorg"
+try:
+    from scripts import shortcut_seeding_report
+except ImportError:  # invoked as `python3 path/to/fabric_api.py`
+    import shortcut_seeding_report
+
+
 GITHUB_API = "https://api.github.com"
 ONELAKE_DFS = "https://onelake.dfs.fabric.microsoft.com"
 
 AAD_DOMAIN_DEFAULT = "eng.acceleratedata.ai"
 
 
-# ─── Auth ─────────────────────────────────────────────────────────────────────
-
-def _get_az_token(resource: str) -> str:
-    result = subprocess.run(
-        ["az", "account", "get-access-token", "--resource", resource],
-        capture_output=True, text=True, check=True,
-    )
-    return json.loads(result.stdout)["accessToken"]
-
-
-def get_fabric_token() -> str:
-    return _get_az_token("https://api.fabric.microsoft.com")
-
-
-def get_powerbi_token() -> str:
-    """api.powerbi.com requires a different OAuth audience from api.fabric.microsoft.com.
-    Same UAMI session, no additional Azure permissions needed.
-    """
-    return _get_az_token("https://analysis.windows.net/powerbi/api")
-
-
-def get_storage_token() -> str:
-    """OneLake DFS API requires the Azure Storage audience."""
-    return _get_az_token("https://storage.azure.com")
-
-
-# ─── HTTP helpers ─────────────────────────────────────────────────────────────
-
-def fabric_request(method: str, path: str, token: str, body: dict = None, retries: int = 3):
-    """Make a Fabric REST API call with retry on 429/500/503."""
-    url = f"{FABRIC_API}{path}"
-    data = json.dumps(body).encode() if body else None
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Authorization", f"Bearer {token}")
-    req.add_header("Content-Type", "application/json")
-
-    for attempt in range(retries):
-        try:
-            with urllib.request.urlopen(req) as resp:
-                raw = resp.read()
-                return json.loads(raw) if raw else {}
-        except urllib.error.HTTPError as e:
-            if e.code in (429, 500, 503) and attempt < retries - 1:
-                retry_after = int(e.headers.get("Retry-After", 5)) if e.code != 500 else 1
-                print(f"HTTP {e.code}, retrying in {retry_after}s…", flush=True)
-                time.sleep(retry_after)
-                continue
-            body_text = e.read().decode(errors="replace")
-            print(f"HTTP {e.code} {method} {url}: {body_text}", file=sys.stderr)
-            raise
-    raise RuntimeError(f"Failed after {retries} retries: {method} {path}")
-
-
 # ─── Workspace helpers ─────────────────────────────────────────────────────────
 
-def find_workspace_by_name(name: str, token: str) -> dict | None:
-    resp = fabric_request("GET", "/workspaces", token)
+def find_workspace_by_name(name: str) -> dict | None:
+    resp = fabric_transport.request("GET", "/workspaces")
     for ws in resp.get("value", []):
         if ws["displayName"] == name:
             return ws
     return None
 
 
-def find_lakehouse_by_name(workspace_id: str, name: str, token: str) -> dict | None:
-    resp = fabric_request("GET", f"/workspaces/{workspace_id}/items", token)
+def find_lakehouse_by_name(workspace_id: str, name: str) -> dict | None:
+    resp = fabric_transport.request("GET", f"/workspaces/{workspace_id}/items")
     for item in resp.get("value", []):
         if item["type"] == "Lakehouse" and item["displayName"] == name:
             return item
     return None
 
 
-def write_github_output(key: str, value: str):
-    output_file = os.environ.get("GITHUB_OUTPUT")
-    if output_file:
-        with open(output_file, "a") as f:
-            f.write(f"{key}={value}\n")
-    else:
-        print(f"GITHUB_OUTPUT not set; {key}={value}")
-
-
 # ─── Contributor helper ───────────────────────────────────────────────────────
 
-def add_workspace_user(workspace_id: str, upn: str, token: str):
+def add_workspace_user(workspace_id: str, upn: str):
     """Add a user as Contributor on the workspace by UPN via the Power BI REST API.
 
     The Power BI groups/users endpoint accepts the UPN (email address) directly —
@@ -141,14 +83,12 @@ def add_workspace_user(workspace_id: str, upn: str, token: str):
     has access their role is updated. If the UPN is not found in AAD the API
     returns an error; we log a warning and continue without blocking CI.
     """
-    url = f"{POWERBI_API}/groups/{workspace_id}/users"
-    data = json.dumps({"emailAddress": upn, "groupUserAccessRight": "Contributor"}).encode()
-    req = urllib.request.Request(url, data=data, method="POST")
-    req.add_header("Authorization", f"Bearer {token}")
-    req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req) as resp:
-            resp.read()
+        fabric_transport.request(
+            "POST", f"/groups/{workspace_id}/users",
+            {"emailAddress": upn, "groupUserAccessRight": "Contributor"},
+            audience="powerbi",
+        )
         print(f"Added '{upn}' as Contributor on workspace {workspace_id}.", flush=True)
     except urllib.error.HTTPError as e:
         body_text = e.read().decode(errors="replace")
@@ -162,17 +102,16 @@ def add_workspace_user(workspace_id: str, upn: str, token: str):
 # ─── Commands ─────────────────────────────────────────────────────────────────
 
 def cmd_provision(args):
-    token = get_fabric_token()
     capacity_id = os.environ["FABRIC_CAPACITY_ID"]  # written to GITHUB_ENV by kv_utils fetch-fabric
     name = args.name
 
-    ws = find_workspace_by_name(name, token)
+    ws = find_workspace_by_name(name)
     if ws:
         workspace_id = ws["id"]
         print(f"Reusing existing workspace: {name} ({workspace_id})", flush=True)
     else:
         print(f"Creating workspace: {name}", flush=True)
-        ws = fabric_request("POST", "/workspaces", token, {
+        ws = fabric_transport.request("POST", "/workspaces", {
             "displayName": name,
             "capacityId": capacity_id,
         })
@@ -181,43 +120,42 @@ def cmd_provision(args):
 
     lakehouse_name = os.environ.get("EPHEMERAL_LAKEHOUSE_NAME", "vdephelh")
 
-    lh = find_lakehouse_by_name(workspace_id, lakehouse_name, token)
+    lh = find_lakehouse_by_name(workspace_id, lakehouse_name)
     if lh:
         lakehouse_id = lh["id"]
         print(f"Reusing existing lakehouse: {lakehouse_name} ({lakehouse_id})", flush=True)
     else:
         print(f"Creating lakehouse: {lakehouse_name}", flush=True)
-        lh = fabric_request("POST", f"/workspaces/{workspace_id}/items", token, {
+        lh = fabric_transport.request("POST", f"/workspaces/{workspace_id}/items", {
             "displayName": lakehouse_name,
             "type": "Lakehouse",
+            "creationPayload": {"enableSchemas": True},
         })
         lakehouse_id = lh["id"]
         print(f"Lakehouse created: {lakehouse_id}", flush=True)
 
-    write_github_output("workspace_id", workspace_id)
-    write_github_output("lakehouse_id", lakehouse_id)
-    write_github_output("lakehouse_name", lakehouse_name)
+    runner_io.set_output("workspace_id", workspace_id)
+    runner_io.set_output("lakehouse_id", lakehouse_id)
+    runner_io.set_output("lakehouse_name", lakehouse_name)
     print(f"Provision complete: workspace={workspace_id} lakehouse={lakehouse_id} ({lakehouse_name})", flush=True)
 
 
 def cmd_teardown(args):
-    token = get_fabric_token()
-    ws = find_workspace_by_name(args.name, token)
+    ws = find_workspace_by_name(args.name)
     if not ws:
         print(f"Workspace not found: {args.name} — nothing to teardown.", flush=True)
         return
     workspace_id = ws["id"]
     print(f"Deleting workspace: {args.name} ({workspace_id})", flush=True)
-    fabric_request("DELETE", f"/workspaces/{workspace_id}", token)
+    fabric_transport.request("DELETE", f"/workspaces/{workspace_id}")
     print("Workspace deleted.", flush=True)
 
 
 def cmd_cleanup(args):
-    token = get_fabric_token()
     gh_token = os.environ.get("GH_TOKEN", "")
     repo = args.repo
 
-    resp = fabric_request("GET", "/workspaces", token)
+    resp = fabric_transport.request("GET", "/workspaces")
     ephemeral = [
         ws for ws in resp.get("value", [])
         if ws["displayName"].startswith("vibedata-ephemeral-")
@@ -249,7 +187,7 @@ def cmd_cleanup(args):
         if pr_state in ("closed", "not_found"):
             print(f"  Deleting orphan: {name} (PR #{pr_number} is {pr_state})", flush=True)
             try:
-                fabric_request("DELETE", f"/workspaces/{ws['id']}", token)
+                fabric_transport.request("DELETE", f"/workspaces/{ws['id']}")
                 deleted += 1
             except Exception as exc:
                 print(f"  Failed to delete {name}: {exc}", file=sys.stderr)
@@ -277,32 +215,13 @@ def cmd_add_contributor(args):
         upn = f"{args.github_login}@{aad_domain}"
         print(f"Constructed UPN: {upn}", flush=True)
 
-    token = get_powerbi_token()
-    add_workspace_user(args.workspace_id, upn, token)
+    add_workspace_user(args.workspace_id, upn)
 
 
 # ─── OneLake Files upload ─────────────────────────────────────────────────────
 
-def _dfs_request(method: str, url: str, token: str, data: bytes = None, params: dict = None) -> None:
-    """Execute an ADLS Gen2 DFS REST API call; raises on non-2xx."""
-    if params:
-        url = f"{url}?{urllib.parse.urlencode(params)}"
-    # Always set Content-Length: ADLS Gen2 requires Content-Length: 0 on flush PATCH.
-    effective_data = data if data is not None else b""
-    req = urllib.request.Request(url, data=effective_data, method=method)
-    req.add_header("Authorization", f"Bearer {token}")
-    req.add_header("Content-Length", str(len(effective_data)))
-    try:
-        with urllib.request.urlopen(req):
-            pass
-    except urllib.error.HTTPError as e:
-        body_text = e.read().decode(errors="replace")
-        print(f"HTTP {e.code} {method} {url}: {body_text}", file=sys.stderr)
-        raise
-
-
 def upload_onelake_file(
-    workspace_id: str, lakehouse_id: str, local_path: str, remote_path: str, token: str
+    workspace_id: str, lakehouse_id: str, local_path: str, remote_path: str
 ) -> str:
     """Upload a local file to OneLake via the ADLS Gen2 DFS three-step protocol.
 
@@ -318,30 +237,27 @@ def upload_onelake_file(
         data = f.read()
     size = len(data)
 
-    _dfs_request("PUT", url, token, params={"resource": "file"})
+    fabric_transport.dfs_request("PUT", url, params={"resource": "file"})
     print(f"OneLake file path created: {remote_path}", flush=True)
 
-    _dfs_request("PATCH", url, token, data=data, params={"action": "append", "position": "0"})
+    fabric_transport.dfs_request("PATCH", url, data=data, params={"action": "append", "position": "0"})
     print(f"Data appended ({size} bytes).", flush=True)
 
-    _dfs_request("PATCH", url, token, params={"action": "flush", "position": str(size)})
+    fabric_transport.dfs_request("PATCH", url, params={"action": "flush", "position": str(size)})
     print("File flushed and committed.", flush=True)
 
     return f"abfss://{workspace_id}@onelake.dfs.fabric.microsoft.com/{lakehouse_id}/{remote_path}"
 
 
 def cmd_upload_file(args):
-    token = get_storage_token()
     abfss = upload_onelake_file(
-        args.workspace_id, args.lakehouse_id, args.local_path, args.remote_path, token
+        args.workspace_id, args.lakehouse_id, args.local_path, args.remote_path
     )
-    write_github_output("abfss_path", abfss)
+    runner_io.set_output("abfss_path", abfss)
     print(f"ABFSS URI: {abfss}", flush=True)
 
 
 # ─── Shortcut seeding ─────────────────────────────────────────────────────────
-
-SHORTCUT_REPORT_PATH = "reports/shortcut_seeding.json"
 
 
 def _build_shortcut_body(entry: dict) -> dict:
@@ -359,36 +275,11 @@ def _build_shortcut_body(entry: dict) -> dict:
     }
 
 
-def _merge_seeding_report(existing: dict, created: int, already_existed: int) -> dict:
-    """Pure: merge counts into the existing report, preserving any other keys
-    (e.g. `derived`, `zero_state` written by Slice 1)."""
-    merged = dict(existing)
-    merged["created"] = created
-    merged["already_existed"] = already_existed
-    return merged
-
-
-def _write_seeding_report(report_path: str, created: int, already_existed: int) -> None:
-    """Read-modify-write the shortcut-seeding report, preserving Slice 1 keys."""
-    existing: dict = {}
-    if os.path.exists(report_path):
-        with open(report_path) as f:
-            try:
-                existing = json.load(f)
-            except json.JSONDecodeError:
-                existing = {}
-    merged = _merge_seeding_report(existing, created, already_existed)
-    os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
-    with open(report_path, "w") as f:
-        json.dump(merged, f, indent=2)
-
-
 def seed_shortcuts(
     from_file: str,
     workspace_id: str,
     lakehouse_id: str,
-    token: str,
-    report_path: str = SHORTCUT_REPORT_PATH,
+    report_path: str = shortcut_seeding_report.DEFAULT_PATH,
 ) -> None:
     """Read derived shortcuts list and POST each to the Fabric Shortcuts API.
 
@@ -397,7 +288,7 @@ def seed_shortcuts(
       * 409 Conflict → idempotent; counted toward `already_existed`.
       * 403 Forbidden → SystemExit with alias + source path + Viewer-on-prod hint.
       * 404 Not Found → SystemExit with alias + source path; halts further entries.
-      * Other errors (incl. 500 after fabric_request retry exhaustion) → SystemExit
+      * Other errors (incl. 500 after fabric_transport retry exhaustion) → SystemExit
         with the alias.
 
     Updates `report_path` with merged `{created, already_existed}` counts; preserves
@@ -417,7 +308,7 @@ def seed_shortcuts(
     for entry in entries:
         body = _build_shortcut_body(entry)
         try:
-            fabric_request("POST", api_path, token, body)
+            fabric_transport.request("POST", api_path, body)
             created += 1
             print(f"Created shortcut: {entry['alias']}", flush=True)
         except urllib.error.HTTPError as e:
@@ -440,12 +331,11 @@ def seed_shortcuts(
                 f"Failed creating shortcut '{entry['alias']}' (HTTP {e.code})."
             )
 
-    _write_seeding_report(report_path, created, already_existed)
+    shortcut_seeding_report.set_seeding(created, already_existed, path=report_path)
 
 
 def cmd_seed_shortcuts(args):
-    token = get_fabric_token()
-    seed_shortcuts(args.from_file, args.workspace_id, args.lakehouse_id, token)
+    seed_shortcuts(args.from_file, args.workspace_id, args.lakehouse_id)
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────

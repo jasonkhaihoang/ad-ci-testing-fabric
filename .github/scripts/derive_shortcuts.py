@@ -29,29 +29,18 @@ import json
 import os
 import subprocess
 import sys
-from typing import Dict, List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
+
+try:
+    from scripts import shortcut_seeding_report
+except ImportError:  # invoked as `python3 path/to/derive_shortcuts.py`
+    import shortcut_seeding_report
+
+import runner_io
+from dbt_manifest import Manifest
 
 
 # ─── Pure core ────────────────────────────────────────────────────────────────
-
-def walk_upstreams(manifest: dict, start_unique_id: str) -> Set[str]:
-    """Recursively walk depends_on.nodes from start; return reachable node IDs (excluding start)."""
-    nodes = manifest.get("nodes", {})
-    sources = manifest.get("sources", {})
-    seen: Set[str] = set()
-    stack = [start_unique_id]
-    while stack:
-        current = stack.pop()
-        node = nodes.get(current) or sources.get(current)
-        if node is None:
-            continue
-        for dep in node.get("depends_on", {}).get("nodes", []):
-            if dep in seen or dep == start_unique_id:
-                continue
-            seen.add(dep)
-            stack.append(dep)
-    return seen
-
 
 def _is_schema_enabled(upstream_nodes: List[dict]) -> bool:
     """Schema-enabled if every upstream has a non-empty schema; otherwise flat."""
@@ -60,11 +49,11 @@ def _is_schema_enabled(upstream_nodes: List[dict]) -> bool:
     return all(n.get("schema") for n in upstream_nodes)
 
 
-def _resolve_node(unique_id: str, prod_manifest: dict, current_manifest: dict) -> Optional[dict]:
+def _resolve_node(unique_id: str, prod_manifest: Manifest, current_manifest: Manifest) -> Optional[dict]:
     """Look up an upstream node. Sources from current-branch; models/snapshots from prod."""
     if unique_id.startswith("source."):
-        return current_manifest.get("sources", {}).get(unique_id)
-    return prod_manifest.get("nodes", {}).get(unique_id)
+        return current_manifest.source(unique_id)
+    return prod_manifest.node(unique_id)
 
 
 def _node_table_name(node: dict) -> str:
@@ -107,8 +96,8 @@ def _shortcut_entry(
 
 
 def derive_shortcuts(
-    current_manifest: dict,
-    prod_manifest: dict,
+    current_manifest: dict | Manifest,
+    prod_manifest: dict | Manifest,
     modified_unique_ids: List[str],
     prod_workspace_id: str,
     prod_lakehouse_id: str,
@@ -121,10 +110,13 @@ def derive_shortcuts(
     if not modified_unique_ids:
         return [], "no-modified-models"
 
+    cur = current_manifest if isinstance(current_manifest, Manifest) else Manifest.from_dict(current_manifest)
+    prod = prod_manifest if isinstance(prod_manifest, Manifest) else Manifest.from_dict(prod_manifest)
+
     modified_set = set(modified_unique_ids)
     all_upstreams: Set[str] = set()
     for mid in modified_unique_ids:
-        all_upstreams |= walk_upstreams(current_manifest, mid)
+        all_upstreams |= cur.upstreams_of(mid)
 
     # Filter: drop modified-set members, seeds, views, and ephemeral models.
     candidates: List[Tuple[str, dict]] = []
@@ -133,7 +125,7 @@ def derive_shortcuts(
             continue
         if uid.startswith("seed."):
             continue
-        node = _resolve_node(uid, prod_manifest, current_manifest)
+        node = _resolve_node(uid, prod, cur)
         if node is None:
             # Unresolved node — skip; could be a test, exposure, or unknown type.
             continue
@@ -187,11 +179,10 @@ def _run_dbt_ls() -> List[str]:
         capture_output=True, text=True,
     )
     if result.returncode != 0:
-        print(
-            f"::error::dbt ls failed (exit {result.returncode}). "
+        runner_io.error(
+            f"dbt ls failed (exit {result.returncode}). "
             f"stdout/stderr (first 500 chars): "
-            f"{(result.stdout + result.stderr)[:500]}",
-            file=sys.stderr,
+            f"{(result.stdout + result.stderr)[:500]}"
         )
         return []
     unique_ids: List[str] = []
@@ -210,20 +201,7 @@ def _run_dbt_ls() -> List[str]:
 
 
 def _write_report(derived: List[dict], zero_state: Optional[str]) -> None:
-    """Write reports/shortcut_seeding.json, preserving any pre-existing keys (Slice 2 merges)."""
-    os.makedirs("reports", exist_ok=True)
-    path = "reports/shortcut_seeding.json"
-    existing: Dict = {}
-    if os.path.exists(path):
-        try:
-            with open(path) as f:
-                existing = json.load(f) or {}
-        except ValueError:
-            existing = {}
-    existing["derived"] = derived
-    existing["zero_state"] = zero_state
-    with open(path, "w") as f:
-        json.dump(existing, f, indent=2)
+    shortcut_seeding_report.set_derivation(derived, zero_state)
 
 
 def _emit_shortcuts(shortcuts: List[dict], output_path: Optional[str]) -> None:
@@ -256,8 +234,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         _write_report([], "no-modified-models")
         return 0
 
-    current_manifest = _read_json("target/manifest.json") or {"nodes": {}, "sources": {}}
-    prod_manifest = _read_json("prod-state/manifest.json") or {"nodes": {}, "sources": {}}
+    current_manifest = Manifest.from_path("target/manifest.json")
+    prod_manifest = Manifest.from_path("prod-state/manifest.json")
 
     shortcuts, zero_state = derive_shortcuts(
         current_manifest=current_manifest,
