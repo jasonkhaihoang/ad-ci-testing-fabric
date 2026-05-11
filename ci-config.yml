@@ -22,15 +22,13 @@ notebook_glob: "intents/**/*.ipynb"         # Glob pattern to find the dbt noteb
 
 # prod_manifest_source configures how the CI pipeline fetches the production dbt manifest
 # for Slim CI (dbt build --defer --state). If omitted, greenfield fallback is used.
-#
-# prod_manifest_source:
-#   mode: artifact                    # artifact (default) or onelake (future — see design doc §4.5)
-#
-#   # artifact mode: downloads manifest.json from the latest successful CD workflow run on main.
-#   workflow: deploy-prod.yml         # CD workflow file name in this repo
-#   artifact_name: prod-manifest      # name of the GitHub Actions artifact containing manifest.json
-#   main_branch: main                 # branch to resolve the latest run from (default: main)
-#
+
+prod_manifest_source:
+  mode: artifact
+  workflow: publish-prod-manifest.yml
+  artifact_name: prod-manifest
+  main_branch: main
+
 #   # onelake mode (future — post-CD, see design doc §4.5 ADR):
 #   # workspace_id: <prod-ws-guid>    # production Fabric workspace ID
 #   # lakehouse_id: <prod-lh-guid>    # production Fabric lakehouse ID
