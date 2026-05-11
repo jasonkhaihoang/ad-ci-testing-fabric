@@ -33,6 +33,7 @@ jobs:
   # Auto-rebases branch onto main if behind, then parses ci-config.yml.
   # Uses KV UAMI to fetch App credentials for the force-push token; no Fabric UAMI needed.
   preflight:
+    name: "preflight: parse config & auto-rebase"
     if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     outputs:
@@ -166,6 +167,7 @@ jobs:
   # Downloads prod-state/manifest.json for Slim CI deferral.
   # Modes: artifact (gh run download from CD), onelake (Fabric UAMI), greenfield (dbt parse fallback).
   fetch-prod-state:
+    name: "gate 1: fetch prod state"
     if: github.event.action != 'closed'
     needs: preflight
     runs-on: ubuntu-latest
@@ -178,7 +180,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - run: pip install pyyaml "dbt-core>=1.8" "dbt-duckdb>=1.8" --quiet
+      - run: pip install pyyaml "dbt-core>=1.8" "dbt-duckdb>=1.8" "dbt-fabricspark>=1.8" --quiet
 
       - name: Emit Gate 1 pending
         env:
@@ -252,16 +254,36 @@ jobs:
             --description "$DESC" \
             --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
+      - name: Post gate-1 comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GREENFIELD_FALLBACK: ${{ steps.fetch.outputs.greenfield_fallback }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          SCRIPTS_DIR: ${{ env.SCRIPTS }}
+        run: |
+          python3 - <<'EOF'
+          import os, sys
+          sys.path.insert(0, os.environ["GITHUB_WORKSPACE"] + "/" + os.environ["SCRIPTS_DIR"])
+          import notify_render, pr_comment
+          greenfield = os.environ.get("GREENFIELD_FALLBACK", "false").lower() == "true"
+          body = notify_render.render_gate_1_comment(greenfield)
+          pr_comment.upsert("<!-- ci-gate-1 -->", body, os.environ["PR_NUMBER"], os.environ["REPO"])
+          EOF
+
   # ─── PROVISION ────────────────────────────────────────────────────────────
   # 1. KV UAMI: fetch Fabric capacity ID + GitHub App config → GITHUB_ENV
   # 2. Fabric UAMI: find-or-create workspace + lakehouse, inject notebook
   provision:
+    name: "provision: ephemeral workspace & shortcuts"
     if: github.event.action != 'closed'
     needs: [preflight, fetch-prod-state]
     runs-on: ubuntu-latest
     outputs:
       ephemeral_workspace_id: ${{ steps.provision.outputs.workspace_id }}
       ephemeral_lakehouse_id: ${{ steps.provision.outputs.lakehouse_id }}
+      notebook_id: ${{ steps.inject-notebook.outputs.notebook_id }}
     steps:
       - uses: actions/checkout@v4
 
@@ -283,13 +305,6 @@ jobs:
           AZURE_KEYVAULT_URL: ${{ vars.AZURE_KEYVAULT_URL }}
           FABRIC_CAPACITY_ID_KV_NAME: ${{ vars.FABRIC_CAPACITY_ID_KV_NAME }}
         run: python3 ${{ env.SCRIPTS }}/kv_utils.py fetch-fabric
-
-      - name: Fetch GitHub App config from Key Vault
-        env:
-          AZURE_KEYVAULT_URL: ${{ vars.AZURE_KEYVAULT_URL }}
-          GH_APP_ID_KV_NAME: ${{ vars.GH_APP_ID_KV_NAME }}
-          GH_INSTALLATION_ID_KV_NAME: ${{ vars.GH_INSTALLATION_ID_KV_NAME }}
-        run: python3 ${{ env.SCRIPTS }}/kv_utils.py fetch-github-app
 
       - name: Login — Fabric UAMI
         uses: azure/login@v2
@@ -335,9 +350,9 @@ jobs:
 
       - name: Install dbt and parse current branch
         run: |
-          pip install "dbt-core>=1.8" "dbt-duckdb>=1.8" --quiet
+          pip install "dbt-core>=1.8" "dbt-duckdb>=1.8" "dbt-fabricspark>=1.8" --quiet
           dbt deps --quiet
-          dbt parse --profiles-dir .github/profiles --target dbt_quality --quiet
+          dbt parse --profiles-dir .github/profiles --target dbt_fabric_compile --quiet
 
       - name: Derive shortcuts from manifest
         env:
@@ -364,6 +379,7 @@ jobs:
           retention-days: 30
 
       - name: Inject notebook into ephemeral workspace
+        id: inject-notebook
         env:
           AZURE_KEYVAULT_URL: ${{ vars.AZURE_KEYVAULT_URL }}
           EPHEMERAL_WORKSPACE_ID: ${{ steps.provision.outputs.workspace_id }}
@@ -371,16 +387,32 @@ jobs:
           EPHEMERAL_LAKEHOUSE_ID: ${{ steps.provision.outputs.lakehouse_id }}
           NOTEBOOK_GLOB: ${{ needs.preflight.outputs.notebook_glob }}
           HEAD_BRANCH: ${{ github.head_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REPO_URL: ${{ github.event.repository.clone_url }}
+          GH_APP_ID_KV_NAME: ${{ vars.GH_APP_ID_KV_NAME }}
+          GH_INSTALLATION_ID_KV_NAME: ${{ vars.GH_INSTALLATION_ID_KV_NAME }}
           GH_APP_PEM_KV_NAME: ${{ vars.GH_APP_PEM_KV_NAME }}
           PROD_STATE_ABFSS: ${{ steps.upload-prod-state.outputs.abfss_path }}
           CI_TARGET: ${{ needs.preflight.outputs.ci_target }}
         run: python3 ${{ env.SCRIPTS }}/inject_notebook.py
 
+      - name: Post workspace comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EPHEMERAL_WORKSPACE_ID: ${{ steps.provision.outputs.workspace_id }}
+          EPHEMERAL_WORKSPACE_NAME: ${{ needs.preflight.outputs.ephemeral_name }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          GREENFIELD_FALLBACK: ${{ needs.fetch-prod-state.outputs.greenfield_fallback }}
+        run: python3 ${{ env.SCRIPTS }}/notify.py --workspace-comment-only
+
   # ─── STATIC ANALYSIS ──────────────────────────────────────────────────────
   # Gate 0: linting + dbt compile + build --empty + diff-scoped schema gate.
   # Posts ci/gate-0 commit status; either blocking step failing marks Gate 0 failed.
   static-analysis:
+    name: "gate 0: static analysis"
     needs: [preflight]
     runs-on: ubuntu-latest
     steps:
@@ -392,7 +424,7 @@ jobs:
 
       - name: Install analysis tools
         run: |
-          pip install ruff sqlfluff pyyaml "dbt-core>=1.8" "dbt-duckdb>=1.8" --quiet
+          pip install ruff sqlfluff pyyaml "dbt-core>=1.8" "dbt-duckdb>=1.8" "dbt-fabricspark>=1.8" --quiet
           curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
             | tar xz -C /usr/local/bin gitleaks
 
@@ -441,7 +473,7 @@ jobs:
           DBT_JOB_NAME: ci-parse
         run: |
           dbt deps --quiet 2>/dev/null || true
-          dbt compile --profiles-dir .github/profiles --target dbt_quality --exclude package:elementary --quiet 2>/dev/null || true
+          dbt compile --profiles-dir .github/profiles --target dbt_fabric_compile --exclude package:elementary --quiet 2>/dev/null || true
           python3 ${{ env.SCRIPTS }}/scorecard.py \
             --manifest target/manifest.json \
             --agents-md AGENTS.md \
@@ -457,7 +489,7 @@ jobs:
           SCHEMA: dummy
         run: |
           python3 ${{ env.SCRIPTS }}/dbt_error_report.py reports/dbt_compile.json \
-            compile --profiles-dir .github/profiles --target dbt_quality \
+            compile --profiles-dir .github/profiles --target dbt_fabric_compile \
             --exclude package:elementary || true
 
       - name: Setup DuckDB source tables for offline build
@@ -525,6 +557,48 @@ jobs:
           name: ci-reports-pr${{ github.event.pull_request.number }}
           path: reports/
           retention-days: 30
+
+      - name: Post gate-0 comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, sys
+          sys.path.insert(0, ".github/scripts")
+          from notify_render import render_gate_0_comment
+          import pr_comment
+
+          def load(path):
+              try:
+                  with open(path) as f:
+                      return json.load(f)
+              except (OSError, json.JSONDecodeError):
+                  return None
+
+          compile_result    = load("reports/dbt_compile.json")
+          build_empty_result = load("reports/dbt_build_empty.json")
+          schema_gate       = load("reports/schema_gate.json")
+          ruff              = load("reports/ruff.json")
+          sqlfluff          = load("reports/sqlfluff.json")
+          gitleaks          = load("reports/gitleaks.json")
+          scorecard         = load("reports/scorecard.json")
+          shortcut_seeding  = load("reports/shortcut_seeding.json")
+
+          body = render_gate_0_comment(
+              compile_result, build_empty_result, schema_gate,
+              ruff=ruff, sqlfluff=sqlfluff, gitleaks=gitleaks,
+              scorecard=scorecard, shortcut_seeding=shortcut_seeding,
+          )
+          pr_comment.upsert(
+              marker="<!-- ci-gate-0 -->",
+              body=body,
+              pr_number=os.environ["PR_NUMBER"],
+              repo=os.environ["GITHUB_REPOSITORY"],
+          )
+          PYEOF
 
       - name: Gate 0 evaluate
         if: always()
@@ -612,12 +686,20 @@ jobs:
             --description "$DESC" \
             --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-  # ─── NOTIFY ───────────────────────────────────────────────────────────────
-  # Posts PR comment with workspace URL + scorecard. No Azure access needed.
-  notify:
-    needs: [preflight, provision, static-analysis, fetch-prod-state]
+  # ─── GATE 3 — UNIT TESTS ──────────────────────────────────────────────────
+  # dbt unit tests against state:modified+ models with mocked YAML inputs.
+  # Runs in Fabric ephemeral workspace, parallel to Gate 2. Needs only the
+  # provisioned workspace — shortcuts seeded by provision cover get_columns_in_relation()
+  # for unmodified upstream relations. Starts as soon as provision passes.
+  gate-3-unit:
+    name: "gate 3: unit tests"
+    needs: [provision, fetch-prod-state]
+    if: github.event.action != 'closed' && needs.provision.result == 'success'
+    timeout-minutes: 12
+    concurrency:
+      group: pr-${{ github.event.pull_request.number }}-gate-3
+      cancel-in-progress: true
     runs-on: ubuntu-latest
-    if: always() && github.event.action != 'closed'
     steps:
       - uses: actions/checkout@v4
 
@@ -627,36 +709,213 @@ jobs:
 
       - run: pip install pyyaml --quiet
 
-      - name: Download reports
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-reports-pr${{ github.event.pull_request.number }}
-          path: reports/
-        continue-on-error: true
+      - run: mkdir -p reports
 
-      - name: Download shortcut seeding report
-        uses: actions/download-artifact@v4
+      - name: Login — Fabric UAMI
+        uses: azure/login@v2
         with:
-          name: ci-reports-shortcuts-pr${{ github.event.pull_request.number }}
-          path: reports/
-        continue-on-error: true
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
+          allow-no-subscriptions: true
 
-      - name: Post PR comment
+      - name: Run Gate 3
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EPHEMERAL_WORKSPACE_ID: ${{ needs.provision.outputs.ephemeral_workspace_id }}
-          EPHEMERAL_WORKSPACE_NAME: ${{ needs.preflight.outputs.ephemeral_name }}
-          STATIC_ANALYSIS_OUTCOME: ${{ needs.static-analysis.result }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          python3 ${{ env.SCRIPTS }}/gate_runner.py run-gate \
+            --gate 3 \
+            --workspace-id "${{ needs.provision.outputs.ephemeral_workspace_id }}" \
+            --lakehouse-id "${{ needs.provision.outputs.ephemeral_lakehouse_id }}" \
+            --notebook-id "${{ needs.provision.outputs.notebook_id }}" \
+            --head-sha "${{ github.event.pull_request.head.sha }}" \
+            --output reports/gate-3.json
+
+      - name: Upload Gate 3 report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-reports-gate-3-pr${{ github.event.pull_request.number }}
+          path: reports/gate-3.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Post gate-3 comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
-          HEAD_BRANCH: ${{ github.head_ref }}
-          GREENFIELD_FALLBACK: ${{ needs.fetch-prod-state.outputs.greenfield_fallback }}
-        run: python3 ${{ env.SCRIPTS }}/notify.py
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, sys
+          sys.path.insert(0, os.environ["SCRIPTS"])
+          import pr_comment, notify_render
+          try:
+              with open("reports/gate-3.json") as f:
+                  result = json.load(f)
+          except (OSError, json.JSONDecodeError):
+              result = None
+          body = notify_render.render_gate_3_comment(result)
+          pr_comment.upsert(notify_render.GATE_3_MARKER, body, os.environ["PR_NUMBER"], os.environ["REPO"])
+          PYEOF
+
+      - name: Emit Gate 3 final status
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            STATE=success
+            DESC="Gate 3: unit tests passed"
+          else
+            STATE=failure
+            DESC="Gate 3: unit tests failed — see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+          python3 ${{ env.SCRIPTS }}/emit_status.py \
+            --context "ci/gate-3" \
+            --state "$STATE" \
+            --description "$DESC" \
+            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+  # ─── GATE 2 — WRITE ───────────────────────────────────────────────────────
+  # Triggers the injected notebook via Fabric Item Jobs API, polls until
+  # terminal, downloads gate-2.json, emits ci/gate-2 commit status.
+  gate-2-write:
+    name: "gate 2: isolated build"
+    needs: [preflight, provision, fetch-prod-state]
+    if: github.event.action != 'closed'
+    timeout-minutes: 12
+    concurrency:
+      group: pr-${{ github.event.pull_request.number }}-gate-2
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: pip install pyyaml --quiet
+
+      - name: Login — Fabric UAMI
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Run Gate 2
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          python3 ${{ env.SCRIPTS }}/gate_runner.py run-gate \
+            --gate 2 \
+            --workspace-id "${{ needs.provision.outputs.ephemeral_workspace_id }}" \
+            --lakehouse-id "${{ needs.provision.outputs.ephemeral_lakehouse_id }}" \
+            --notebook-id "${{ needs.provision.outputs.notebook_id }}" \
+            --head-sha "${{ github.event.pull_request.head.sha }}"
+
+      - name: Post gate-2 comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys
+          sys.path.insert(0, ".github/scripts")
+          import notify_render, pr_comment
+          try:
+              with open("reports/gate-2.json") as f:
+                  result = json.load(f)
+          except (OSError, json.JSONDecodeError):
+              result = None
+          body = notify_render.render_gate_2_comment(result)
+          pr_comment.upsert("<!-- ci-gate-2 -->", body, os.environ["PR_NUMBER"], os.environ["GITHUB_REPOSITORY"])
+          EOF
+
+  # ─── GATE 4 — DATA TESTS ─────────────────────────────────────────────────
+  # Triggers dbt test --store-failures via Fabric Item Jobs API after Gate 2.
+  # Skipped (no ci/gate-4 status emitted) when Gate 2 fails.
+  gate-4-data-test:
+    name: "gate 4: data tests"
+    needs: [provision, gate-2-write]
+    if: github.event.action != 'closed' && needs.gate-2-write.result == 'success'
+    timeout-minutes: 12
+    concurrency:
+      group: pr-${{ github.event.pull_request.number }}-gate-4
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: pip install pyyaml --quiet
+
+      - name: Login — Fabric UAMI
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Run Gate 4
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          python3 ${{ env.SCRIPTS }}/gate_runner.py run-gate \
+            --gate 4 \
+            --workspace-id "${{ needs.provision.outputs.ephemeral_workspace_id }}" \
+            --lakehouse-id "${{ needs.provision.outputs.ephemeral_lakehouse_id }}" \
+            --notebook-id "${{ needs.provision.outputs.notebook_id }}" \
+            --head-sha "${{ github.event.pull_request.head.sha }}" \
+            --output reports/gate-4.json
+
+      - name: Post gate-4 comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys
+          sys.path.insert(0, ".github/scripts")
+          import notify_render, pr_comment
+          try:
+              with open("reports/gate-4.json") as f:
+                  result = json.load(f)
+          except (OSError, json.JSONDecodeError):
+              result = None
+          body = notify_render.render_gate_4_comment(result)
+          pr_comment.upsert("<!-- ci-gate-4 -->", body, os.environ["PR_NUMBER"], os.environ["GITHUB_REPOSITORY"])
+          EOF
 
   # ─── TEARDOWN ─────────────────────────────────────────────────────────────
   # Deletes the ephemeral workspace when PR is closed or merged.
   # Fabric UAMI only — no KV access needed for teardown.
   teardown:
+    name: "teardown: delete workspace"
     if: github.event.action == 'closed'
     runs-on: ubuntu-latest
     steps:

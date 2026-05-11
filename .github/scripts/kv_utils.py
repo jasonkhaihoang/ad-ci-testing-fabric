@@ -7,7 +7,6 @@ short-lived token exchanged for an Azure access token by azure/login.
 
 CLI commands:
   fetch-fabric           Fetches Fabric config (capacity ID) → writes to $GITHUB_ENV
-  fetch-github-app       Fetches GitHub App config → writes to $GITHUB_ENV
   fetch-app-token-creds  Fetches App ID + PEM for actions/create-github-app-token → writes to $GITHUB_ENV
 
 Required env var:
@@ -20,6 +19,8 @@ import os
 import subprocess
 import urllib.error
 import urllib.request
+
+import runner_io
 
 KV_API_VERSION = "7.4"
 
@@ -45,31 +46,6 @@ def get_secret(secret_name: str) -> str:
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")
         raise RuntimeError(f"Failed to fetch KV secret '{secret_name}': HTTP {e.code} — {body}") from e
-
-
-def write_env(key: str, value: str):
-    """Write a key=value pair to $GITHUB_ENV for use in subsequent steps."""
-    env_file = os.environ.get("GITHUB_ENV")
-    if env_file:
-        with open(env_file, "a") as f:
-            f.write(f"{key}={value}\n")
-    else:
-        print(f"[kv_utils] {key}={value}")
-
-
-def write_env_multiline(key: str, value: str, delimiter: str = "EOF_KV_ML"):
-    """Write a multiline value to $GITHUB_ENV using heredoc syntax."""
-    env_file = os.environ.get("GITHUB_ENV")
-    if env_file:
-        with open(env_file, "a") as f:
-            f.write(f"{key}<<{delimiter}\n{value}\n{delimiter}\n")
-    else:
-        print(f"[kv_utils] {key}=<multiline>")
-
-
-def mask_value(value: str):
-    """Instruct the GitHub Actions runner to mask this value in all log output."""
-    print(f"::add-mask::{value}", flush=True)
 
 
 def normalize_pem(pem: str) -> str:
@@ -112,24 +88,8 @@ def cmd_fetch_fabric():
     """Fetch Fabric capacity ID and write to GITHUB_ENV."""
     secret_name = os.environ.get("FABRIC_CAPACITY_ID_KV_NAME") or "vibedata-fabric-capacity-id"
     capacity_id = get_secret(secret_name)
-    write_env("FABRIC_CAPACITY_ID", capacity_id)
+    runner_io.set_env("FABRIC_CAPACITY_ID", capacity_id)
     print("Fetched: FABRIC_CAPACITY_ID", flush=True)
-
-
-def cmd_fetch_github_app():
-    """Fetch GitHub App ID and installation ID and write to GITHUB_ENV.
-    The PEM secret name is passed through as-is — the Fabric notebook
-    fetches the actual PEM at runtime using its own KV access.
-    """
-    app_id_secret_name = os.environ.get("GH_APP_ID_KV_NAME") or "vibedata-github-app-id"
-    install_id_secret_name = os.environ.get("GH_INSTALLATION_ID_KV_NAME") or "vibedata-github-installation-id"
-
-    app_id = get_secret(app_id_secret_name)
-    installation_id = get_secret(install_id_secret_name)
-
-    write_env("GH_APP_ID_KV_NAME", app_id)
-    write_env("GH_INSTALLATION_ID_KV_NAME", installation_id)
-    print("Fetched: GH_APP_ID_KV_NAME, GH_INSTALLATION_ID_KV_NAME", flush=True)
 
 
 def cmd_fetch_app_token_creds():
@@ -150,9 +110,9 @@ def cmd_fetch_app_token_creds():
     log_pem_info(raw_pem)
     pem = normalize_pem(raw_pem)
 
-    mask_value(pem)
-    write_env("GH_APP_ID_VALUE", app_id)
-    write_env_multiline("GH_APP_PEM_VALUE", pem)
+    runner_io.mask(pem)
+    runner_io.set_env("GH_APP_ID_VALUE", app_id)
+    runner_io.set_env_multiline("GH_APP_PEM_VALUE", pem)
     print("Fetched: GH_APP_ID_VALUE, GH_APP_PEM_VALUE (PEM masked)", flush=True)
 
 
@@ -160,14 +120,11 @@ def main():
     parser = argparse.ArgumentParser(description="Fetch secrets from Azure Key Vault")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("fetch-fabric", help="Fetch Fabric capacity ID → GITHUB_ENV")
-    sub.add_parser("fetch-github-app", help="Fetch GitHub App ID + installation ID → GITHUB_ENV")
     sub.add_parser("fetch-app-token-creds", help="Fetch App ID + PEM for create-github-app-token → GITHUB_ENV")
     args = parser.parse_args()
 
     if args.command == "fetch-fabric":
         cmd_fetch_fabric()
-    elif args.command == "fetch-github-app":
-        cmd_fetch_github_app()
     elif args.command == "fetch-app-token-creds":
         cmd_fetch_app_token_creds()
 

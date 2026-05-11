@@ -1,10 +1,40 @@
-# DuckDB profile for offline dbt-project-evaluator runs.
-# Used only by dbt-quality.yml — not for production dbt runs.
-# The profile name (dbt_fab_spark) matches dbt_project.yml so no project file changes are needed.
+# CI dbt profiles for the six-gate ladder.
+# Profile name (dbt_fab_spark) matches domain repo dbt_project.yml — no project file changes needed.
+# CI workflow always passes --profiles-dir .github/profiles; no collision with ~/.dbt/profiles.yml.
 dbt_fab_spark:
   outputs:
+    # Existing offline DuckDB target — used by dbt-quality.yml and seed/build-empty in Gate 0.
     dbt_quality:
       type: duckdb
       path: /tmp/vibedata_dbt_quality.duckdb
       threads: 4
+
+    # Gates 0 + 1: compile-only Fabric target. Macros resolve to Fabric T-SQL.
+    # Dummy GUIDs — no DB connection made for dbt compile / dbt ls / dbt parse.
+    dbt_fabric_compile:
+      type: fabricspark
+      method: az_cli
+      workspaceid: "00000000-0000-0000-0000-000000000000"
+      lakehouse: "00000000-0000-0000-0000-000000000000"
+      lakehouseid: "00000000-0000-0000-0000-000000000000"
+      schema: dbt_compile
+      spark_config:
+        name: "dbt_ci_compile"
+
+    # Gates 2, 3, 4, 5: real row execution against the ephemeral Fabric workspace.
+    # method: livy is the only valid Fabric connection method.
+    # authentication: fabric_notebook uses notebookutils.credentials.getToken(),
+    # which is available in the Fabric notebook runtime (unlike az_cli which requires az login).
+    # Env vars set by run_dbt_job → setup_environment() before dbt is spawned.
+    ephemeral_ci:
+      type: fabricspark
+      method: livy
+      authentication: fabric_notebook
+      workspaceid: "{{ env_var('WORKSPACE_ID') }}"
+      lakehouse: "{{ env_var('LAKEHOUSE') }}"
+      lakehouseid: "{{ env_var('LAKEHOUSE_ID') }}"
+      schema: "{{ env_var('SCHEMA') }}"
+      spark_config:
+        name: "dbt_ephemeral_ci"
+
   target: dbt_quality

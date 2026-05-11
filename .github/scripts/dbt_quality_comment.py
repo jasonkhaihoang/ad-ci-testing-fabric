@@ -7,9 +7,11 @@ The workflow always exits 0 — violations are advisory and do not block merge.
 """
 
 import os
-import subprocess
-import sys
-import tempfile
+
+try:
+    from scripts import pr_comment
+except ImportError:
+    import pr_comment
 
 DUCKDB_PATH = "/tmp/vibedata_dbt_quality.duckdb"
 
@@ -111,53 +113,14 @@ def build_comment(violations: dict[str, list[dict]]) -> str:
 """
 
 
-def _find_existing_comment(pr_number: str, repo: str) -> str | None:
-    """Return the comment ID of a previous evaluator comment, or None."""
-    result = subprocess.run(
-        ["gh", "api", f"repos/{repo}/issues/{pr_number}/comments",
-         "--jq", f'.[] | select(.body | contains("{COMMENT_MARKER}")) | .id'],
-        capture_output=True, text=True,
-    )
-    comment_id = result.stdout.strip().splitlines()[0] if result.stdout.strip() else None
-    return comment_id
-
-
-def post_comment(comment: str, pr_number: str, repo: str) -> None:
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as tmp:
-        tmp.write(comment)
-        tmp_path = tmp.name
-
-    try:
-        comment_id = _find_existing_comment(pr_number, repo)
-        if comment_id:
-            result = subprocess.run(
-                ["gh", "api", "--method", "PATCH",
-                 f"repos/{repo}/issues/comments/{comment_id}",
-                 "--field", f"body=@{tmp_path}"],
-                capture_output=True, text=True,
-            )
-        else:
-            result = subprocess.run(
-                ["gh", "pr", "comment", pr_number,
-                 "--repo", repo,
-                 "--body-file", tmp_path],
-                capture_output=True, text=True,
-            )
-        if result.returncode != 0:
-            print(f"Failed to post PR comment: {result.stderr}", file=sys.stderr)
-            sys.exit(1)
-        print("dbt quality PR comment posted.", flush=True)
-    finally:
-        os.unlink(tmp_path)
-
-
 def main() -> None:
     pr_number = os.environ.get("PR_NUMBER", "")
     repo = os.environ.get("REPO", "")
 
     violations = query_violations(DUCKDB_PATH)
     comment = build_comment(violations)
-    post_comment(comment, pr_number, repo)
+    pr_comment.upsert(COMMENT_MARKER, comment, pr_number, repo)
+    print("dbt quality PR comment posted.", flush=True)
 
 
 if __name__ == "__main__":

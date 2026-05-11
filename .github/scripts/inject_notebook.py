@@ -27,111 +27,11 @@ import copy
 import glob
 import json
 import os
-import subprocess
 import sys
-import time
-import urllib.error
-import urllib.request
 
+import fabric_transport
+import runner_io
 
-FABRIC_API = "https://api.fabric.microsoft.com/v1"
-FABRIC_POLL_TIMEOUT_S = 120
-FABRIC_POLL_INTERVAL_S = 5
-
-
-def get_fabric_token() -> str:
-    """Get a Fabric access token from the Azure CLI OIDC session."""
-    result = subprocess.run(
-        ["az", "account", "get-access-token",
-         "--resource", "https://api.fabric.microsoft.com"],
-        capture_output=True, text=True, check=True,
-    )
-    return json.loads(result.stdout)["accessToken"]
-
-
-def fabric_request(method: str, path: str, token: str, body: dict = None) -> dict:
-    url = f"{FABRIC_API}{path}"
-    data = json.dumps(body).encode() if body else None
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Authorization", f"Bearer {token}")
-    req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req) as resp:
-            raw = resp.read()
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as e:
-        print(f"HTTP {e.code} {method} {url}: {e.read().decode(errors='replace')}", file=sys.stderr)
-        raise
-
-
-def _fabric_post(path: str, token: str, body: dict) -> tuple[int, str | None, dict]:
-    """POST to Fabric API; returns (status_code, operation_url_or_None, body_dict).
-
-    The operation URL is sourced from the Location response header, falling back
-    to constructing it from operationId in the response body. Returns None when
-    neither is present (callers must raise if they required an operation URL).
-    """
-    url = f"{FABRIC_API}{path}"
-    data = json.dumps(body).encode()
-    req = urllib.request.Request(url, data=data, method="POST")
-    req.add_header("Authorization", f"Bearer {token}")
-    req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req) as resp:
-            status = resp.status
-            location = resp.getheader("Location")
-            raw = resp.read()
-            parsed = json.loads(raw) if raw else {}
-            if not location and "operationId" in parsed:
-                location = f"{FABRIC_API}/operations/{parsed['operationId']}"
-            return status, location, parsed
-    except urllib.error.HTTPError as e:
-        print(f"HTTP {e.code} POST {url}: {e.read().decode(errors='replace')}", file=sys.stderr)
-        raise
-
-
-def poll_fabric_operation(
-    operation_url: str | None,
-    token: str,
-    timeout_s: int = FABRIC_POLL_TIMEOUT_S,
-    poll_interval_s: int = FABRIC_POLL_INTERVAL_S,
-) -> None:
-    """Poll a Fabric long-running operation URL until Succeeded; raise on failure or timeout."""
-    if not operation_url:
-        raise RuntimeError(
-            "Fabric returned 202 Accepted but no operation URL was found in the "
-            "Location header or response body."
-        )
-    print(f"Polling Fabric operation: {operation_url}", flush=True)
-    deadline = time.monotonic() + timeout_s
-    last_status = "Unknown"
-    attempt = 0
-    while time.monotonic() < deadline:
-        attempt += 1
-        req = urllib.request.Request(operation_url, method="GET")
-        req.add_header("Authorization", f"Bearer {token}")
-        try:
-            with urllib.request.urlopen(req) as resp:
-                result = json.loads(resp.read())
-        except urllib.error.HTTPError as e:
-            body_text = e.read().decode(errors="replace")
-            raise RuntimeError(
-                f"Failed to poll Fabric operation (HTTP {e.code}): {body_text}"
-            ) from e
-        last_status = result.get("status", "Unknown")
-        print(f"  Operation status [{attempt}]: {last_status}", flush=True)
-        if last_status == "Succeeded":
-            return
-        if last_status == "Failed":
-            error = result.get("error", {})
-            msg = f"{error.get('errorCode', 'UnknownError')}: {error.get('message', str(result))}"
-            raise RuntimeError(f"Fabric operation failed — {msg}")
-        time.sleep(poll_interval_s)
-    raise RuntimeError(
-        f"Fabric operation timed out after {timeout_s}s "
-        f"(last status: {last_status!r}). "
-        "The notebook may not be available in the workspace."
-    )
 
 
 def ipynb_to_fabric_py(notebook: dict) -> str:
@@ -200,19 +100,29 @@ def substitute_parameters_cell(notebook: dict) -> dict:
     # Falls back to ./prod-state when unset OR empty (GitHub Actions outputs empty string for
     # unset step outputs, so we must guard against both cases).
     prod_state_abfss = os.environ.get("PROD_STATE_ABFSS", "").strip() or "./prod-state"
+    if prod_state_abfss.endswith("/manifest.json"):
+        prod_state_abfss = prod_state_abfss[:-len("/manifest.json")]
     # CI_TARGET is the dbt profile target name used by Slim CI Build/Test/Clone commands.
     # Sourced from ci-config.yml::ci_target via preflight output. Defaults to "ephemeral_ci"
     # when omitted; domain repos can override to match their own profiles.yml convention.
     ci_target = os.environ.get("CI_TARGET", "").strip() or "ephemeral_ci"
 
+    head_sha = os.environ.get("HEAD_SHA", "").strip()
+
     # Build the substituted parameters cell source.
-    # The command uses notebook-runtime f-strings ({prod_state_path}) — the braces are
+    # The command uses notebook-runtime f-strings ({local_prod_state_path}) — the braces are
     # escaped here so inject_notebook.py does not substitute them at injection time.
+    # Note: prod_state_path is still injected as a variable — the Download cell reads it and
+    # sets local_prod_state_path to the downloaded local directory.
     new_params = [
         "# Parameters — injected by CI (do not edit manually)\n",
         f'prod_state_path = "{prod_state_abfss}"\n',
         f'ci_target = "{ci_target}"\n',
-        'command = ["dbt deps", f"dbt build --select state:modified+ --defer --state {prod_state_path} --target {ci_target}", f"dbt test --select state:modified+ --store-failures --target {ci_target}"]\n',
+        'dep_command = ["dbt deps"]\n',
+        'clone_command = ["dbt deps", f"dbt clone --select state:modified+ --state {local_prod_state_path} --profiles-dir .github/profiles --target {ci_target}"]\n',
+        'build_command = ["dbt deps", f"dbt build --select state:modified+ --state {local_prod_state_path} --profiles-dir .github/profiles --target {ci_target}"]\n',
+        'unit_test_command = ["dbt deps", f"dbt test --select state:modified+ --select test_type:unit --state {local_prod_state_path} --profiles-dir .github/profiles --target {ci_target}"]\n',
+        'data_test_command = ["dbt deps", f"dbt test --select state:modified+ --exclude test_type:unit --store-failures --state {local_prod_state_path} --profiles-dir .github/profiles --target {ci_target}"]\n',
         f'repo_url = "{repo_url}"\n',
         f'repo_branch = "{branch}"\n',
         f'github_app_id = "{github_app_id}"\n',
@@ -224,6 +134,10 @@ def substitute_parameters_cell(notebook: dict) -> dict:
         f'workspace_id = "{workspace_id}"\n',
         f'workspace_name = "{workspace_name}"\n',
         'schema_name = "dbo"\n',
+        'run_mode = "interactive"\n',
+        'gate = "2"\n',
+        'ci_run_id = ""\n',
+        f'head_sha = "{head_sha}"\n',
     ]
 
     # Find and replace the Parameters cell (first cell with "Parameters" comment or tag)
@@ -251,74 +165,82 @@ def substitute_parameters_cell(notebook: dict) -> dict:
     return nb, params_cell_idx
 
 
-def insert_clone_cell(notebook: dict, params_idx: int) -> dict:
-    """Insert a Clone cell immediately before the Build cell.
+def insert_download_cell(notebook: dict, params_idx: int) -> tuple[dict, int]:
+    """Insert a download cell BEFORE the Parameters cell.
 
-    Searches for the first cell after params_idx that contains run_dbt_job
-    and inserts before it. Falls back to inserting after params_idx with a
-    warning if no Build cell is found.
+    Downloads manifest.json from the ABFSS URI in prod_state_path to /tmp/prod-state/
+    and sets local_prod_state_path = local_dir. prod_state_path is left unchanged
+    (remains the ABFSS URI). The Parameters cell — which uses local_prod_state_path
+    in its f-string commands — runs after this cell so local_prod_state_path is
+    already defined when those f-strings are evaluated.
+
+    Returns (nb, params_idx + 1) where params_idx + 1 is the new position of the
+    Parameters cell (shifted down by the insertion).
     """
     nb = copy.deepcopy(notebook)
 
-    build_idx = None
-    for i in range(params_idx + 1, len(nb["cells"])):
-        if "run_dbt_job" in "".join(nb["cells"][i].get("source", [])):
-            build_idx = i
-            break
-
-    if build_idx is None:
-        print("Warning: No Build cell found. Inserting Clone cell after Parameters as fallback.", flush=True)
-        insert_idx = params_idx + 1
-    else:
-        insert_idx = build_idx
-
-    clone_cell = {
+    download_cell = {
         "cell_type": "code",
         "source": [
-            "# Clone: Reset D and D+ to prod state\n",
-            "# Re-run this cell at any time to reset between test iterations.\n",
-            "from dbt.adapters.fabricspark.notebook import run_dbt_job, DbtJobConfig, RepoConfig, ConnectionConfig\n",
-            "\n",
-            "clone_config = DbtJobConfig(\n",
-            '    command=["dbt deps", f"dbt clone --select state:modified+ --defer --state {prod_state_path} --target {ci_target}"],\n',
-            "    repo=RepoConfig(\n",
-            "        url=repo_url,\n",
-            "        branch=repo_branch,\n",
-            "        github_app_id=github_app_id,\n",
-            "        github_installation_id=github_installation_id,\n",
-            "        github_pem_secret=github_pem_secret,\n",
-            "        vault_url=vault_url,\n",
-            "    ),\n",
-            "    connection=ConnectionConfig(\n",
-            '        lakehouse_name=lakehouse_name,\n',
-            "        lakehouse_id=lakehouse_id,\n",
-            "        workspace_id=workspace_id,\n",
-            "        workspace_name=workspace_name,\n",
-            "        schema_name=schema_name,\n",
-            "    ),\n",
-            ")\n",
-            "run_dbt_job(clone_config)\n",
+            "# Download prod-state manifest from OneLake (ABFSS → local path)\n",
+            "# Sets local_prod_state_path for use in Parameters cell f-string commands.\n",
+            "if prod_state_path.startswith('abfss://'):\n",
+            "    import os, urllib.request\n",
+            "    # abfss://WORKSPACE_ID@onelake.dfs.fabric.microsoft.com/LAKEHOUSE_ID/...\n",
+            "    # → https://onelake.dfs.fabric.microsoft.com/WORKSPACE_ID/LAKEHOUSE_ID/...\n",
+            "    https_url = prod_state_path.replace('abfss://', 'https://onelake.dfs.fabric.microsoft.com/', 1)\n",
+            "    https_url = https_url.replace('@onelake.dfs.fabric.microsoft.com', '', 1)\n",
+            "    manifest_url = https_url.rstrip('/') + '/manifest.json'\n",
+            "    local_dir = '/tmp/prod-state'\n",
+            "    os.makedirs(local_dir, exist_ok=True)\n",
+            "    token = notebookutils.credentials.getToken('storage')\n",
+            "    req = urllib.request.Request(manifest_url, headers={'Authorization': f'Bearer {token}'})\n",
+            "    with urllib.request.urlopen(req) as resp:\n",
+            "        with open(f'{local_dir}/manifest.json', 'wb') as f:\n",
+            "            f.write(resp.read())\n",
+            "    local_prod_state_path = local_dir\n",
         ],
-        "metadata": {"tags": ["ci-injected-clone"]},
+        "metadata": {"tags": ["ci-injected-download"]},
         "outputs": [],
         "execution_count": None,
     }
 
-    nb["cells"].insert(insert_idx, clone_cell)
+    nb["cells"].insert(params_idx, download_cell)
+    return nb, params_idx + 1
+
+
+def patch_lakehouse_metadata(notebook: dict, lakehouse_id: str, lakehouse_name: str, workspace_id: str) -> dict:
+    """Patch metadata.dependencies.lakehouse to the ephemeral lakehouse before upload.
+
+    Fabric restores the default-lakehouse context from # META lines in the serialized
+    notebook. Without this patch, spark.sql() and notebookutils.fs calls resolve to
+    the prod lakehouse, not the ephemeral one.
+    """
+    nb = copy.deepcopy(notebook)
+    nb.setdefault("metadata", {}).setdefault("dependencies", {})["lakehouse"] = {
+        "default_lakehouse": lakehouse_id,
+        "default_lakehouse_name": lakehouse_name,
+        "default_lakehouse_workspace_id": workspace_id,
+        # Replace, not append — ephemeral notebook must have no prod lakehouse entries in scope.
+        "known_lakehouses": [{"id": lakehouse_id, "name": lakehouse_name, "workspaceId": workspace_id}],
+    }
     return nb
 
 
-def find_existing_notebook(workspace_id: str, display_name: str, token: str) -> str | None:
+def find_existing_notebook(workspace_id: str, display_name: str) -> str | None:
     """Return item ID of an existing notebook with the given display name, or None."""
-    resp = fabric_request("GET", f"/workspaces/{workspace_id}/items", token)
+    resp = fabric_transport.request("GET", f"/workspaces/{workspace_id}/items")
     for item in resp.get("value", []):
         if item["type"] == "Notebook" and item["displayName"] == display_name:
             return item["id"]
     return None
 
 
-def upload_notebook(workspace_id: str, display_name: str, notebook: dict, token: str):
-    """Create or update a notebook in the Fabric workspace via Items API."""
+def upload_notebook(workspace_id: str, display_name: str, notebook: dict) -> str | None:
+    """Create or update a notebook in the Fabric workspace via Items API.
+
+    Returns the notebook item ID (emits to GITHUB_OUTPUT as notebook_id).
+    """
     nb_content = base64.b64encode(ipynb_to_fabric_py(notebook).encode()).decode()
     definition = {
         "parts": [{
@@ -328,38 +250,112 @@ def upload_notebook(workspace_id: str, display_name: str, notebook: dict, token:
         }]
     }
 
-    existing_id = find_existing_notebook(workspace_id, display_name, token)
-
+    existing_id = find_existing_notebook(workspace_id, display_name)
     if existing_id:
         print(f"Updating existing notebook: {display_name} ({existing_id})", flush=True)
-        status, op_url, _ = _fabric_post(
+        fabric_transport.request_long_running(
+            "POST",
             f"/workspaces/{workspace_id}/items/{existing_id}/updateDefinition",
-            token,
             {"definition": definition},
         )
+        notebook_id = existing_id
     else:
         print(f"Creating notebook: {display_name}", flush=True)
-        status, op_url, _ = _fabric_post(
+        body = fabric_transport.request_long_running(
+            "POST",
             f"/workspaces/{workspace_id}/items",
-            token,
             {"displayName": display_name, "type": "Notebook", "definition": definition},
         )
+        notebook_id = body.get("id") or find_existing_notebook(workspace_id, display_name)
 
-    if status == 202:
-        poll_fabric_operation(op_url, token)
-        print(f"Notebook '{display_name}' is now available in the workspace.", flush=True)
-    elif status in (200, 201):
-        print("Notebook upload complete.", flush=True)
-    else:
-        raise RuntimeError(
-            f"Unexpected HTTP {status} from Fabric Items API. "
-            "Expected 200, 201, or 202."
-        )
+    print(f"Notebook '{display_name}' is now available in the workspace.", flush=True)
+    if notebook_id:
+        runner_io.set_output("notebook_id", notebook_id)
+        print(f"Notebook ID: {notebook_id}", flush=True)
+
+    return notebook_id
+
+
+def _insert_ci_gate_cell(notebook: dict) -> dict:
+    """Append CI orchestration cell at end of notebook."""
+    nb = copy.deepcopy(notebook)
+    ci_gate_cell = {
+        "cell_type": "code",
+        "source": [
+            "if run_mode == \"ci\":\n",
+            "    if gate == \"2\":\n",
+            "        from dbt.adapters.fabricspark.notebook import run_dbt_job, DbtJobConfig, RepoConfig, ConnectionConfig\n",
+            "        _repo = RepoConfig(url=repo_url, branch=repo_branch, github_app_id=github_app_id, github_installation_id=github_installation_id, github_pem_secret=github_pem_secret, vault_url=vault_url)\n",
+            "        _conn = ConnectionConfig(lakehouse_name=lakehouse_name, lakehouse_id=lakehouse_id, workspace_id=workspace_id, workspace_name=workspace_name, schema_name=schema_name)\n",
+            "        clone_result = run_dbt_job(DbtJobConfig(command=clone_command, repo=_repo, connection=_conn))\n",
+            "        build_result = run_dbt_job(DbtJobConfig(command=build_command, repo=_repo, connection=_conn))\n",
+            "        import json, os\n",
+            "        run_results_path = os.path.join(build_result.log_dir, \"run_results.json\")\n",
+            "        run_results = json.load(open(run_results_path)) if os.path.exists(run_results_path) else {\"results\": []}\n",
+            "        models_out = [{\"name\": r.get(\"unique_id\",\"\").split(\".\")[-1], \"status\": r.get(\"status\",\"\"), \"duration_seconds\": r.get(\"execution_time\",0.0), \"error_message\": (r.get(\"message\") or \"\")[:500] or None} for r in run_results.get(\"results\",[])]\n",
+            "        overall = \"pass\" if all(m[\"status\"] in (\"success\",\"pass\") for m in models_out) else \"fail\"\n",
+            "        gate_result = {\"gate\": \"2\", \"head_sha\": head_sha, \"overall_status\": overall, \"models\": models_out}\n",
+            "        notebookutils.fs.put(f\"Files/ci-artifacts/gate-2/{head_sha}/gate-2.json\", json.dumps(gate_result, indent=2), overwrite=True)\n",
+            "    elif gate == \"4\":\n",
+            "        from dbt.adapters.fabricspark.notebook import run_dbt_job, DbtJobConfig, RepoConfig, ConnectionConfig\n",
+            "        _repo = RepoConfig(url=repo_url, branch=repo_branch, github_app_id=github_app_id, github_installation_id=github_installation_id, github_pem_secret=github_pem_secret, vault_url=vault_url)\n",
+            "        _conn = ConnectionConfig(lakehouse_name=lakehouse_name, lakehouse_id=lakehouse_id, workspace_id=workspace_id, workspace_name=workspace_name, schema_name=schema_name)\n",
+            "        test_result = run_dbt_job(DbtJobConfig(command=data_test_command, repo=_repo, connection=_conn))\n",
+            "        import json, os\n",
+            "        run_results_path = os.path.join(test_result.log_dir, \"run_results.json\")\n",
+            "        run_results = json.load(open(run_results_path)) if os.path.exists(run_results_path) else {\"results\": []}\n",
+            "        tests_out = [\n",
+            "            {\n",
+            "                \"name\": r.get(\"unique_id\", \"\").split(\".\")[-1],\n",
+            "                \"model\": (r.get(\"unique_id\", \"\").split(\".\") + [\"\"])[2] if len(r.get(\"unique_id\", \"\").split(\".\")) > 2 else \"\",\n",
+            "                \"status\": r.get(\"status\", \"\"),\n",
+            "                \"duration_seconds\": r.get(\"execution_time\", 0.0),\n",
+            "                \"failures_count\": r.get(\"failures\", 0) or 0,\n",
+            "                \"store_failures_table\": f\"dbt_test__audit.{r.get('unique_id', '').split('.')[-1]}\" if r.get(\"status\") in (\"fail\", \"error\") else None,\n",
+            "                \"message\": (r.get(\"message\") or \"\")[:500] or None,\n",
+            "            }\n",
+            "            for r in run_results.get(\"results\", [])\n",
+            "        ]\n",
+            "        overall = \"fail\" if any(t[\"status\"] in (\"fail\", \"error\") for t in tests_out) else \"pass\"\n",
+            "        gate_result = {\"gate\": \"4\", \"head_sha\": head_sha, \"overall_status\": overall, \"tests\": tests_out}\n",
+            "        notebookutils.fs.put(f\"Files/ci-artifacts/gate-4/{head_sha}/gate-4.json\", json.dumps(gate_result, indent=2), overwrite=True)\n",
+            "    elif gate == \"3\":\n",
+            "        from dbt.adapters.fabricspark.notebook import run_dbt_job, DbtJobConfig, RepoConfig, ConnectionConfig\n",
+            "        unit_config = DbtJobConfig(\n",
+            "            command=[\"dbt deps\", f\"dbt test --select state:modified+,test_type:unit --state {local_prod_state_path} --profiles-dir .github/profiles --target {ci_target}\"],\n",
+            "            repo=RepoConfig(url=repo_url, branch=repo_branch, github_app_id=github_app_id, github_installation_id=github_installation_id, github_pem_secret=github_pem_secret, vault_url=vault_url),\n",
+            "            connection=ConnectionConfig(lakehouse_name=lakehouse_name, lakehouse_id=lakehouse_id, workspace_id=workspace_id, workspace_name=workspace_name, schema_name=schema_name),\n",
+            "        )\n",
+            "        run_dbt_job(unit_config)\n",
+            "        import json, os\n",
+            "        run_results_path = os.path.expanduser(\"~/.dbt/run_results.json\")\n",
+            "        run_results = json.load(open(run_results_path)) if os.path.exists(run_results_path) else {\"results\": []}\n",
+            "        counts = {\"pass\": 0, \"fail\": 0, \"error\": 0, \"skip\": 0}\n",
+            "        failures = []\n",
+            "        for r in run_results.get(\"results\", []):\n",
+            "            s = r.get(\"status\", \"\")\n",
+            "            if s in (\"pass\", \"success\"): counts[\"pass\"] += 1\n",
+            "            elif s == \"fail\": counts[\"fail\"] += 1; failures.append({\"name\": r.get(\"unique_id\", \"\"), \"status\": \"fail\", \"message\": (r.get(\"message\") or \"\")[:500]})\n",
+            "            elif s == \"skip\": counts[\"skip\"] += 1\n",
+            "            else: counts[\"error\"] += 1; failures.append({\"name\": r.get(\"unique_id\", \"\"), \"status\": \"error\", \"message\": (r.get(\"message\") or \"\")[:500]})\n",
+            "        overall = \"fail\" if (counts[\"fail\"] or counts[\"error\"]) else \"pass\"\n",
+            "        total = sum(counts.values())\n",
+            "        truncated = len(failures) > 10\n",
+            "        gate_result = {\"gate\": \"3\", \"head_sha\": head_sha, \"overall_status\": overall, \"total\": total, \"counts\": counts, \"failures\": failures[:10], \"truncated\": truncated}\n",
+            "        notebookutils.fs.put(f\"Files/ci-artifacts/gate-3/{head_sha}/gate-3.json\", json.dumps(gate_result, indent=2), overwrite=True)\n",
+        ],
+        "metadata": {"tags": ["ci-injected-gate-cell"]},
+        "outputs": [],
+        "execution_count": None,
+    }
+    nb["cells"].append(ci_gate_cell)
+    return nb
 
 
 def main():
-    token = get_fabric_token()
     workspace_id = os.environ["EPHEMERAL_WORKSPACE_ID"]
+    lakehouse_id = os.environ["EPHEMERAL_LAKEHOUSE_ID"]
+    lakehouse_name = os.environ.get("EPHEMERAL_LAKEHOUSE_NAME", "vdephelh")
     notebook_glob = os.environ["NOTEBOOK_GLOB"]
 
     notebook_path = find_notebook(notebook_glob)
@@ -374,13 +370,21 @@ def main():
     notebook, params_idx = substitute_parameters_cell(notebook)
     print(f"Parameters cell substituted (cell index {params_idx}).", flush=True)
 
-    # Step 2: Insert Clone cell after Parameters cell
-    notebook = insert_clone_cell(notebook, params_idx)
-    print("Clone cell inserted.", flush=True)
+    # Step 2: Insert download cell immediately after Parameters cell
+    notebook, params_idx = insert_download_cell(notebook, params_idx)
+    print("Download cell inserted.", flush=True)
 
-    # Step 3: Upload to Fabric workspace
+    # Step 3: Append CI orchestration gate cell
+    notebook = _insert_ci_gate_cell(notebook)
+    print("CI gate cell appended.", flush=True)
+
+    # Step 4: Patch Fabric default-lakehouse metadata to ephemeral workspace
+    notebook = patch_lakehouse_metadata(notebook, lakehouse_id, lakehouse_name, workspace_id)
+    print("Lakehouse metadata patched to ephemeral workspace.", flush=True)
+
+    # Step 5: Upload to Fabric workspace
     display_name = os.path.splitext(os.path.basename(notebook_path))[0]
-    upload_notebook(workspace_id, display_name, notebook, token)
+    upload_notebook(workspace_id, display_name, notebook)
 
 
 if __name__ == "__main__":

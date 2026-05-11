@@ -15,6 +15,8 @@ import os
 import subprocess
 import sys
 
+from dbt_manifest import Manifest
+
 
 def get_pr_changed_files(repo: str, base_sha: str, head_sha: str) -> set[str]:
     result = subprocess.run(
@@ -29,23 +31,12 @@ def get_pr_changed_files(repo: str, base_sha: str, head_sha: str) -> set[str]:
     return set(lines) if lines else set()
 
 
-def _build_model_test_index(nodes: dict) -> set[str]:
-    """Return a set of model unique_ids that have at least one associated test node.
-
-    dbt 1.8+ stores tests as separate nodes with `attached_node`; the model node's
-    own `data_tests` / `tests` field is no longer populated.
-    """
-    tested = set()
-    for node in nodes.values():
-        if node.get("resource_type") in ("test", "unit_test"):
-            attached = node.get("attached_node") or node.get("model")
-            if attached:
-                tested.add(attached)
-    return tested
-
-
 def check_model(node: dict, tested_model_ids: set | None = None) -> list[str]:
-    """Return list of rule violation names for a single model node."""
+    """Return list of rule violation names for a single model node.
+
+    `tested_model_ids` is the set of model unique_ids that have attached test
+    nodes (dbt 1.8+). When None, only inline `data_tests`/`tests` are considered.
+    """
     issues = []
     if not node.get("description", "").strip():
         issues.append("missing_description")
@@ -62,20 +53,21 @@ def check_model(node: dict, tested_model_ids: set | None = None) -> list[str]:
     return issues
 
 
-def run_gate(manifest: dict, changed_files: set[str]) -> dict:
+def run_gate(manifest: dict | Manifest, changed_files: set[str]) -> dict:
     """Evaluate schema rules for every model whose source file is in changed_files."""
-    nodes = manifest.get("nodes", {})
-    tested_model_ids = _build_model_test_index(nodes)
+    m = manifest if isinstance(manifest, Manifest) else Manifest.from_dict(manifest)
     violations = []
     models_evaluated = 0
 
-    for node in nodes.values():
+    for uid, node in m.nodes.items():
         if node.get("resource_type") != "model":
             continue
         if node.get("original_file_path", "") not in changed_files:
             continue
         models_evaluated += 1
-        issues = check_model(node, tested_model_ids)
+        # Treat any attached test (incl. column-level) as satisfying the model-level requirement.
+        tested_ids = {uid} if m.tests_for(uid) else set()
+        issues = check_model(node, tested_ids)
         if issues:
             violations.append({
                 "model": node.get("name", ""),
@@ -109,9 +101,7 @@ def main():
         print(f"Error: manifest not found at {args.manifest}", file=sys.stderr)
         sys.exit(1)
 
-    with open(args.manifest) as f:
-        manifest = json.load(f)
-
+    manifest = Manifest.from_path(args.manifest)
     changed_files = get_pr_changed_files(args.repo, args.base_sha, args.head_sha)
     result = run_gate(manifest, changed_files)
 
