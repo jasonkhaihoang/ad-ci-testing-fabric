@@ -123,15 +123,16 @@ def substitute_parameters_cell(notebook: dict) -> dict:
     prod_lakehouse_name = os.environ.get("PROD_LAKEHOUSE_NAME", "").strip()
 
     # Build the substituted parameters cell source.
-    # The command uses notebook-runtime f-strings ({prod_state_path}) — the braces are
+    # Commands use notebook-runtime f-strings ({local_prod_state_path}) — the braces are
     # escaped here so inject_notebook.py does not substitute them at injection time.
+    # local_prod_state_path is set by the download cell injected before this cell.
     new_params = [
         "# Parameters — injected by CI (do not edit manually)\n",
         f'prod_state_path = "{prod_state_abfss}"\n',
         f'ci_target = "{ci_target}"\n',
         'dep_command = ["dbt deps"]\n',
-        'clone_command = [f"dbt clone --select state:modified+ --state {prod_state_path} --profiles-dir .github/profiles --target {ci_target}"]\n',
-        'build_command = ["dbt deps", f"dbt build --select state:modified+ --state {prod_state_path} --profiles-dir .github/profiles --target {ci_target}"]\n',
+        'clone_command = [f"dbt clone --select state:modified+ --state {local_prod_state_path} --profiles-dir .github/profiles --target {ci_target}"]\n',
+        'build_command = ["dbt deps", f"dbt build --select state:modified+ --state {local_prod_state_path} --profiles-dir .github/profiles --target {ci_target}"]\n',
         'test_command = [f"dbt test --select state:modified+ --store-failures --profiles-dir .github/profiles --target {ci_target}"]\n',
         f'repo_url = "{repo_url}"\n',
         f'repo_branch = "{branch}"\n',
@@ -179,25 +180,24 @@ def substitute_parameters_cell(notebook: dict) -> dict:
 
 
 def insert_download_cell(notebook: dict, params_idx: int) -> tuple[dict, int]:
-    """Insert a download cell immediately after the Parameters cell.
+    """Insert a download cell BEFORE the Parameters cell.
 
-    The cell detects whether prod_state_path is an ABFSS URI at notebook runtime.
-    If so, it converts it to an HTTPS DFS URL, downloads manifest.json to
-    /tmp/prod-state/, and reassigns prod_state_path to that local directory.
-    If prod_state_path is already a local path (e.g. ./prod-state), the cell is
-    a no-op.
+    Downloads manifest.json from the ABFSS URI in prod_state_path to /tmp/prod-state/
+    and sets local_prod_state_path = local_dir. prod_state_path is left unchanged
+    (remains the ABFSS URI). The Parameters cell — which uses local_prod_state_path
+    in its f-string commands — runs after this cell so local_prod_state_path is
+    already defined when those f-strings are evaluated.
 
-    Returns (nb, params_idx + 1) so the caller can pass the updated index to
-    insert_clone_cell.
+    Returns (nb, params_idx + 1) where params_idx + 1 is the new position of the
+    Parameters cell (shifted down by the insertion).
     """
     nb = copy.deepcopy(notebook)
-    insert_idx = params_idx + 1
 
     download_cell = {
         "cell_type": "code",
         "source": [
             "# Download prod-state manifest from OneLake (ABFSS → local path)\n",
-            "# No-op when prod_state_path is already a local path (e.g. greenfield ./prod-state).\n",
+            "# Sets local_prod_state_path for use in Parameters cell f-string commands.\n",
             "if prod_state_path.startswith('abfss://'):\n",
             "    import os, urllib.request\n",
             "    # abfss://WORKSPACE_ID@onelake.dfs.fabric.microsoft.com/LAKEHOUSE_ID/...\n",
@@ -212,15 +212,15 @@ def insert_download_cell(notebook: dict, params_idx: int) -> tuple[dict, int]:
             "    with urllib.request.urlopen(req) as resp:\n",
             "        with open(f'{local_dir}/manifest.json', 'wb') as f:\n",
             "            f.write(resp.read())\n",
-            "    prod_state_path = local_dir\n",
+            "    local_prod_state_path = local_dir\n",
         ],
         "metadata": {"tags": ["ci-injected-download"]},
         "outputs": [],
         "execution_count": None,
     }
 
-    nb["cells"].insert(insert_idx, download_cell)
-    return nb, insert_idx
+    nb["cells"].insert(params_idx, download_cell)
+    return nb, params_idx + 1
 
 
 def insert_shallow_clone_cell(notebook: dict, params_idx: int) -> dict:
