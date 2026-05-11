@@ -81,7 +81,7 @@ def _shortcut_entry(
     schema = node.get("schema") or ""
     table = _node_table_name(node)
     if schema_enabled and schema:
-        path = f"Tables/{schema}_{table}"
+        path = f"Tables/{schema}/{table}"
         alias = f"{schema}__{table}"
     else:
         path = f"Tables/{table}"
