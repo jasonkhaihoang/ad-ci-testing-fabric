@@ -14,9 +14,12 @@ Public surface:
     render_gate_3(summary)           — (passed, markdown)
 """
 
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
+
+_RUNNER_PREFIX_RE = re.compile(r"^/home/runner/work/[^/]+/[^/]+/")
 
 
 FABRIC_WORKSPACE_URL = "https://app.fabric.microsoft.com/groups/{workspace_id}/list?experience=fabric-developer"
@@ -40,6 +43,10 @@ class ReportBundle:
     gate_2: Any = None
     gate_3: Any = None
     gate_4: Any = None
+
+
+def _strip_runner_prefix(path: str) -> str:
+    return _RUNNER_PREFIX_RE.sub("", path)
 
 
 def _icon(passed: bool) -> str:
@@ -69,16 +76,20 @@ def render_ruff(report) -> tuple[bool, str]:
     count = len(issues)
     if count == 0:
         return True, "#### Ruff\n\n✅ No issues\n"
-    rule_counts = Counter(item.get("code", "unknown") for item in issues)
-    lines = "\n".join(
-        f"- `{rule}` — {n} violation(s)"
-        for rule, n in sorted(rule_counts.items())
-    )
+    sorted_issues = sorted(issues, key=lambda x: x.get("filename", ""))
+    lines = [
+        f"- `{_strip_runner_prefix(item.get('filename', 'unknown'))}` — `{item.get('code', 'unknown')}` {item.get('message', '')}"
+        for item in sorted_issues[:_VIOLATION_CAP]
+    ]
+    remainder = count - len(lines)
+    detail = "\n".join(lines)
+    if remainder:
+        detail += f"\n\n_…and {remainder} more_"
     section = (
         f"#### Ruff\n\n"
         f"❌ {count} issue(s)\n\n"
-        f"<details>\n<summary>Per-rule breakdown</summary>\n\n"
-        f"{lines}\n\n"
+        f"<details>\n<summary>Violations</summary>\n\n"
+        f"{detail}\n\n"
         f"</details>\n"
     )
     return False, section
@@ -162,7 +173,7 @@ def render_scorecard(report) -> tuple[bool, str]:
     return section_passed, section
 
 
-def render_gate_0(compile_result: dict, build_empty_result: dict, schema_gate: dict) -> tuple[bool, str]:
+def render_gate_0(compile_result: dict, build_empty_result: dict, schema_gate: dict, *, extra_rows: str = "") -> tuple[bool, str]:
     def _check_ok(report: dict) -> bool | None:
         if not report:
             return None
@@ -172,11 +183,6 @@ def render_gate_0(compile_result: dict, build_empty_result: dict, schema_gate: d
     build_empty_ok = _check_ok(build_empty_result)
     sg_ok = _check_ok(schema_gate)
     gate_passed = all(v is not False for v in [compile_ok, build_empty_ok, sg_ok])
-
-    def _item(report: dict, label: str) -> str:
-        if not report:
-            return f"| {label} | ⚠️ Unavailable |\n"
-        return f"| {label} | {_icon(bool(report.get('passed')))} |\n"
 
     if not schema_gate:
         sg_cell = "⚠️ Unavailable"
@@ -191,11 +197,17 @@ def render_gate_0(compile_result: dict, build_empty_result: dict, schema_gate: d
         evaluated = schema_gate.get("models_evaluated", 0)
         sg_cell = f"❌ {len(violations)} violation(s)"
 
+    def _cell(report: dict, detail_fn) -> str:
+        if not report:
+            return "⚠️ Unavailable"
+        return f"{_icon(bool(report.get('passed')))} {detail_fn(report)}"
+
     table = (
         "| Check | Result |\n|-------|--------|\n"
-        + _item(compile_result, "dbt compile")
-        + _item(build_empty_result, "dbt build --empty")
+        + f"| dbt compile | {_cell(compile_result, _detail_compile)} |\n"
+        + f"| dbt build --empty | {_cell(build_empty_result, _detail_build_empty)} |\n"
         + f"| Schema gate | {sg_cell} |\n"
+        + extra_rows
     )
 
     overall_icon = _icon(gate_passed)
@@ -614,23 +626,38 @@ def render_gate_0_comment(
     if not has_gate_0 and not has_tools:
         return f"{GATE_0_MARKER}\n## Gate 0 — Static Analysis ⚠️\n\n_No data available._\n"
 
-    _, section = render_gate_0(
+    # Compute tool results first so summary rows can be embedded in the Gate 0 table
+    tool_table_rows = ""
+    tool_parts = []
+    tool_passed_flags = []
+    for value, renderer, detail_fn, label in [
+        (ruff,      render_ruff,      _detail_ruff,      "Ruff"),
+        (sqlfluff,  render_sqlfluff,  _detail_sqlfluff,  "SQLFluff"),
+        (gitleaks,  render_gitleaks,  _detail_gitleaks,  "Gitleaks"),
+        (scorecard, render_scorecard, _detail_scorecard, "dbt Scorecard"),
+    ]:
+        if value is not None:
+            tool_passed, tool_section = renderer(value)
+            tool_passed_flags.append(tool_passed)
+            tool_table_rows += f"| {label} | {_icon(tool_passed)} {detail_fn(value)} |\n"
+            if not tool_passed:
+                tool_parts.append(tool_section)
+
+    gate_0_passed, section = render_gate_0(
         compile_result or {},
         build_empty_result or {},
         schema_gate or {},
+        extra_rows=tool_table_rows,
     )
 
-    parts = [f"{GATE_0_MARKER}\n{section}"]
+    overall_passed = gate_0_passed and all(tool_passed_flags)
+    if overall_passed != gate_0_passed:
+        section = section.replace(
+            f"### Gate 0 — Static Analysis {_icon(gate_0_passed)}",
+            f"### Gate 0 — Static Analysis {_icon(overall_passed)}",
+        )
 
-    for value, renderer in [
-        (ruff, render_ruff),
-        (sqlfluff, render_sqlfluff),
-        (gitleaks, render_gitleaks),
-        (scorecard, render_scorecard),
-    ]:
-        if value is not None:
-            _, tool_section = renderer(value)
-            parts.append(tool_section)
+    parts = [f"{GATE_0_MARKER}\n{section}"] + tool_parts
 
     shortcut_section = _render_shortcut_seeding(shortcut_seeding)
     if shortcut_section:
