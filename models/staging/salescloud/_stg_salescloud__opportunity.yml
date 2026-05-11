@@ -2,6 +2,9 @@ version: 2
 
 models:
   - name: stg_salescloud__opportunity
+    config:
+      meta:
+        owner: jason.khai.hoang@acceleratedata.ai
     description: |
       Staging model for Salesforce opportunities representing the sales pipeline.
       Provides a 1:1 mapping with the source Salesforce Opportunity object,
