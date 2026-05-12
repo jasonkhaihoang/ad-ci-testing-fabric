@@ -261,21 +261,15 @@ def cmd_upload_file(args):
 
 
 def _build_shortcut_body(entry: dict) -> dict:
-    """Pure: derive the Fabric Shortcuts API request body from a manifest entry.
-
-    source_path = "Tables/raw/opportunity" → path = "Tables/raw", name = "opportunity"
-    so the shortcut appears inside the schema subfolder, not at the Tables root.
-    """
-    source_path = entry["source_path"]
-    parent, _, name = source_path.rpartition("/")
+    """Pure: derive the Fabric Shortcuts API request body from a manifest entry."""
     return {
-        "name": name,
-        "path": parent,
+        "name": entry["alias"],
+        "path": "Tables",
         "target": {
             "oneLake": {
                 "workspaceId": entry["source_workspace_id"],
                 "itemId": entry["source_lakehouse_id"],
-                "path": source_path,
+                "path": entry["source_path"],
             }
         },
     }

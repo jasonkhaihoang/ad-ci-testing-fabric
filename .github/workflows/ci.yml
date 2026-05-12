@@ -688,13 +688,12 @@ jobs:
 
   # ─── GATE 3 — UNIT TESTS ──────────────────────────────────────────────────
   # dbt unit tests against state:modified+ models with mocked YAML inputs.
-  # Runs in Fabric ephemeral workspace, parallel to Gate 2. Needs only the
-  # provisioned workspace — shortcuts seeded by provision cover get_columns_in_relation()
-  # for unmodified upstream relations. Starts as soon as provision passes.
+  # Runs in Fabric ephemeral workspace (sequential after Gate 2) so that
+  # get_columns_in_relation() resolves against real tables in the Spark catalog.
   gate-3-unit:
     name: "gate 3: unit tests"
-    needs: [provision, fetch-prod-state]
-    if: github.event.action != 'closed' && needs.provision.result == 'success'
+    needs: [provision, gate-2-write]
+    if: github.event.action != 'closed' && needs.gate-2-write.result == 'success'
     timeout-minutes: 12
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-3

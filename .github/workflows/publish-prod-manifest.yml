@@ -23,12 +23,50 @@ jobs:
           python-version: '3.11'
 
       - name: Install dbt
-        run: pip install "dbt-core>=1.8" "dbt-duckdb>=1.8" --quiet
+        run: pip install "dbt-core>=1.8" "dbt-duckdb>=1.8" "dbt-fabricspark>=1.8" pyyaml --quiet
+
+      - name: Generate prod-manifest profile
+        run: |
+          python3 - <<'PYEOF'
+          import yaml, os, sys
+
+          with open("ci-config.yml") as f:
+              config = yaml.safe_load(f) or {}
+
+          workspace_id  = config.get("prod_workspace_id", "")
+          lakehouse_id  = config.get("prod_lakehouse_id", "")
+          lakehouse     = config.get("prod_lakehouse_name", "")
+          schema        = config.get("prod_schema", "main")
+
+          if not all([workspace_id, lakehouse_id, lakehouse]):
+              print("ci-config.yml missing prod_workspace_id / prod_lakehouse_id / prod_lakehouse_name — cannot generate prod-manifest profile.", flush=True)
+              sys.exit(1)
+
+          with open(".github/profiles/profiles.yml") as f:
+              profiles = yaml.safe_load(f)
+
+          profile_name = next(iter(profiles))
+          profiles[profile_name]["outputs"]["prod_manifest"] = {
+              "type": "fabricspark",
+              "method": "az_cli",
+              "workspaceid": workspace_id,
+              "lakehouse": lakehouse,
+              "lakehouseid": lakehouse_id,
+              "schema": schema,
+              "spark_config": {"name": "dbt_prod_manifest"},
+          }
+
+          os.makedirs("/tmp/prod-profiles", exist_ok=True)
+          with open("/tmp/prod-profiles/profiles.yml", "w") as f:
+              yaml.dump(profiles, f)
+
+          print(f"prod_manifest target: {profile_name} → {lakehouse}.{schema}", flush=True)
+          PYEOF
 
       - name: Parse dbt project
         run: |
           dbt deps --quiet
-          dbt parse --profiles-dir .github/profiles --target dbt_quality --quiet
+          dbt parse --profiles-dir /tmp/prod-profiles --target prod_manifest --quiet
 
       - name: Upload prod-manifest artifact
         uses: actions/upload-artifact@v4
