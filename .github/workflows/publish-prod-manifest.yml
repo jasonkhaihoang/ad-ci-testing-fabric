@@ -33,13 +33,14 @@ jobs:
           with open("ci-config.yml") as f:
               config = yaml.safe_load(f) or {}
 
-          workspace_id  = config.get("prod_workspace_id", "")
-          lakehouse_id  = config.get("prod_lakehouse_id", "")
-          lakehouse     = config.get("prod_lakehouse_name", "")
-          schema        = config.get("prod_schema", "main")
+          workspace_id   = config.get("prod_workspace_id", "")
+          workspace_name = config.get("prod_workspace_name", "")
+          lakehouse_id   = config.get("prod_lakehouse_id", "")
+          lakehouse      = config.get("prod_lakehouse_name", "")
+          schema         = config.get("prod_schema", "main")
 
-          if not all([workspace_id, lakehouse_id, lakehouse]):
-              print("ci-config.yml missing prod_workspace_id / prod_lakehouse_id / prod_lakehouse_name — cannot generate prod-manifest profile.", flush=True)
+          if not all([workspace_id, workspace_name, lakehouse_id, lakehouse]):
+              print("ci-config.yml missing prod_workspace_id / prod_workspace_name / prod_lakehouse_id / prod_lakehouse_name — cannot generate prod-manifest profile.", flush=True)
               sys.exit(1)
 
           with open(".github/profiles/profiles.yml") as f:
@@ -50,6 +51,7 @@ jobs:
               "type": "fabricspark",
               "method": "az_cli",
               "workspaceid": workspace_id,
+              "workspace_name": workspace_name,
               "lakehouse": lakehouse,
               "lakehouseid": lakehouse_id,
               "schema": schema,
@@ -60,7 +62,7 @@ jobs:
           with open("/tmp/prod-profiles/profiles.yml", "w") as f:
               yaml.dump(profiles, f)
 
-          print(f"prod_manifest target: {profile_name} → {lakehouse}.{schema}", flush=True)
+          print(f"prod_manifest target: {profile_name} → {workspace_name}.{lakehouse}.{schema}", flush=True)
           PYEOF
 
       - name: Parse dbt project
