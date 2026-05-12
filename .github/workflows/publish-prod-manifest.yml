@@ -23,7 +23,45 @@ jobs:
           python-version: '3.11'
 
       - name: Install dbt
-        run: pip install "dbt-core>=1.8" "dbt-duckdb>=1.8" "dbt-fabricspark>=1.8" pyyaml --quiet
+        run: pip install "dbt-core>=1.8" "dbt-duckdb>=1.8" "vd-dbt-fabricspark>=1.9" pyyaml --quiet
+
+      - name: Patch fabricspark adapter — allow lakehouse_schemas_enabled from profile
+        run: |
+          python3 - <<'PYEOF'
+          import re
+          import dbt.adapters.fabricspark.credentials as c_mod
+
+          with open(c_mod.__file__) as f:
+              src = f.read()
+
+          # 1. Remove init=False so the profile value is accepted
+          src = src.replace(
+              "lakehouse_schemas_enabled: bool = field(default=False, init=False)",
+              "lakehouse_schemas_enabled: bool = field(default=False)",
+          )
+
+          # 2. Remove the stripping block in __pre_deserialize__
+          src = re.sub(
+              r"\s*# lakehouse_schemas_enabled is init=False.*?del data\[.lakehouse_schemas_enabled.\]\n",
+              "\n",
+              src,
+              flags=re.DOTALL,
+          )
+
+          # 3. Propagate to FabricSparkRelation._schemas_enabled at credential
+          #    load time so dbt parse (no live connection) picks it up.
+          inject = (
+              "        if self.lakehouse_schemas_enabled:\n"
+              "            from dbt.adapters.fabricspark.relation import FabricSparkRelation\n"
+              "            FabricSparkRelation._schemas_enabled = True\n"
+          )
+          src = src.replace("        # Validate spark_config", inject + "        # Validate spark_config")
+
+          with open(c_mod.__file__, "w") as f:
+              f.write(src)
+
+          print(f"Patched {c_mod.__file__}", flush=True)
+          PYEOF
 
       - name: Generate prod-manifest profile
         run: |
@@ -54,6 +92,7 @@ jobs:
               "workspace_name": workspace_name,
               "lakehouse": lakehouse,
               "lakehouseid": lakehouse_id,
+              "lakehouse_schemas_enabled": True,
               "schema": schema,
               "spark_config": {"name": "dbt_prod_manifest"},
           }
