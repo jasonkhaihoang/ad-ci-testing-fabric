@@ -70,6 +70,37 @@ jobs:
           dbt deps --quiet
           dbt parse --profiles-dir /tmp/prod-profiles --target prod_manifest --quiet
 
+      - name: Patch manifest relation_name to 4-part Fabric naming
+        run: |
+          python3 - <<'PYEOF'
+          import json, yaml
+
+          with open("ci-config.yml") as f:
+              config = yaml.safe_load(f) or {}
+
+          workspace = config.get("prod_workspace_name", "")
+          lakehouse = config.get("prod_lakehouse_name", "")
+
+          with open("target/manifest.json") as f:
+              manifest = json.load(f)
+
+          patched = 0
+          for uid, node in manifest.get("nodes", {}).items():
+              if node.get("resource_type") not in ("model", "snapshot", "seed"):
+                  continue
+              schema = node.get("schema", "")
+              alias  = node.get("alias") or node.get("name", "")
+              if not (schema and alias):
+                  continue
+              node["relation_name"] = f"`{workspace}`.`{lakehouse}`.`{schema}`.`{alias}`"
+              patched += 1
+
+          with open("target/manifest.json", "w") as f:
+              json.dump(manifest, f)
+
+          print(f"Patched {patched} nodes → {workspace}.{lakehouse}.<schema>.<table>", flush=True)
+          PYEOF
+
       - name: Upload prod-manifest artifact
         uses: actions/upload-artifact@v4
         with:
