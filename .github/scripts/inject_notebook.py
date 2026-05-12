@@ -166,24 +166,25 @@ def substitute_parameters_cell(notebook: dict) -> dict:
 
 
 def insert_download_cell(notebook: dict, params_idx: int) -> tuple[dict, int]:
-    """Insert a download cell BEFORE the Parameters cell.
+    """Insert a download cell immediately after the Parameters cell.
 
-    Downloads manifest.json from the ABFSS URI in prod_state_path to /tmp/prod-state/
-    and sets local_prod_state_path = local_dir. prod_state_path is left unchanged
-    (remains the ABFSS URI). The Parameters cell — which uses local_prod_state_path
-    in its f-string commands — runs after this cell so local_prod_state_path is
-    already defined when those f-strings are evaluated.
+    The cell detects whether prod_state_path is an ABFSS URI at notebook runtime.
+    If so, it converts it to an HTTPS DFS URL, downloads manifest.json to
+    /tmp/prod-state/, and reassigns prod_state_path to that local directory.
+    If prod_state_path is already a local path (e.g. ./prod-state), the cell is
+    a no-op.
 
-    Returns (nb, params_idx + 1) where params_idx + 1 is the new position of the
-    Parameters cell (shifted down by the insertion).
+    Returns (nb, params_idx + 1) so the caller can pass the updated index to
+    insert_clone_cell.
     """
     nb = copy.deepcopy(notebook)
+    insert_idx = params_idx + 1
 
     download_cell = {
         "cell_type": "code",
         "source": [
             "# Download prod-state manifest from OneLake (ABFSS → local path)\n",
-            "# Sets local_prod_state_path for use in Parameters cell f-string commands.\n",
+            "# No-op when prod_state_path is already a local path (e.g. greenfield ./prod-state).\n",
             "if prod_state_path.startswith('abfss://'):\n",
             "    import os, urllib.request\n",
             "    # abfss://WORKSPACE_ID@onelake.dfs.fabric.microsoft.com/LAKEHOUSE_ID/...\n",
@@ -198,15 +199,15 @@ def insert_download_cell(notebook: dict, params_idx: int) -> tuple[dict, int]:
             "    with urllib.request.urlopen(req) as resp:\n",
             "        with open(f'{local_dir}/manifest.json', 'wb') as f:\n",
             "            f.write(resp.read())\n",
-            "    local_prod_state_path = local_dir\n",
+            "    prod_state_path = local_dir\n",
         ],
         "metadata": {"tags": ["ci-injected-download"]},
         "outputs": [],
         "execution_count": None,
     }
 
-    nb["cells"].insert(params_idx, download_cell)
-    return nb, params_idx + 1
+    nb["cells"].insert(insert_idx, download_cell)
+    return nb, insert_idx
 
 
 def patch_lakehouse_metadata(notebook: dict, lakehouse_id: str, lakehouse_name: str, workspace_id: str) -> dict:
@@ -322,7 +323,7 @@ def _insert_ci_gate_cell(notebook: dict) -> dict:
             "    elif gate == \"3\":\n",
             "        from dbt.adapters.fabricspark.notebook import run_dbt_job, DbtJobConfig, RepoConfig, ConnectionConfig\n",
             "        unit_config = DbtJobConfig(\n",
-            "            command=[\"dbt deps\", f\"dbt test --select state:modified+,test_type:unit --state {local_prod_state_path} --profiles-dir .github/profiles --target {ci_target}\"],\n",
+            "            command=[\"dbt deps\", f\"dbt test --select state:modified+,test_type:unit --state {prod_state_path} --profiles-dir .github/profiles --target {ci_target}\"],\n",
             "            repo=RepoConfig(url=repo_url, branch=repo_branch, github_app_id=github_app_id, github_installation_id=github_installation_id, github_pem_secret=github_pem_secret, vault_url=vault_url),\n",
             "            connection=ConnectionConfig(lakehouse_name=lakehouse_name, lakehouse_id=lakehouse_id, workspace_id=workspace_id, workspace_name=workspace_name, schema_name=schema_name),\n",
             "        )\n",
