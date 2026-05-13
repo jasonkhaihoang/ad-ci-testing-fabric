@@ -12,7 +12,7 @@ Commands:
                    List all vibedata-ephemeral-* workspaces. Delete those whose PR is closed.
 
   add-contributor  --workspace-id ID --github-login LOGIN
-                   Add the PR author as Contributor via the Power BI REST API.
+                   Add the PR author as Member via the Power BI REST API.
                    UPN is constructed as {github_login}@{AAD_DOMAIN}.
                    In production, GitHub SAML SSO ensures the login matches the UPN prefix.
                    Warns and continues if the user is not found; never blocks CI.
@@ -73,10 +73,10 @@ def find_lakehouse_by_name(workspace_id: str, name: str) -> dict | None:
     return None
 
 
-# ─── Contributor helper ───────────────────────────────────────────────────────
+# ─── Member role helper ───────────────────────────────────────────────────────
 
 def add_workspace_user(workspace_id: str, upn: str):
-    """Add a user as Contributor on the workspace by UPN via the Power BI REST API.
+    """Add a user as Member on the workspace by UPN via the Power BI REST API.
 
     The Power BI groups/users endpoint accepts the UPN (email address) directly —
     no AAD object ID lookup required. The call is idempotent: if the user already
@@ -86,14 +86,14 @@ def add_workspace_user(workspace_id: str, upn: str):
     try:
         fabric_transport.request(
             "POST", f"/groups/{workspace_id}/users",
-            {"emailAddress": upn, "groupUserAccessRight": "Contributor"},
+            {"emailAddress": upn, "groupUserAccessRight": "Member"},
             audience="powerbi",
         )
-        print(f"Added '{upn}' as Contributor on workspace {workspace_id}.", flush=True)
+        print(f"Added '{upn}' as Member on workspace {workspace_id}.", flush=True)
     except urllib.error.HTTPError as e:
         body_text = e.read().decode(errors="replace")
         print(
-            f"Warning: could not add '{upn}' as Contributor (HTTP {e.code}): {body_text}. "
+            f"Warning: could not add '{upn}' as Member (HTTP {e.code}): {body_text}. "
             "Skipping — provisioning continues.",
             flush=True,
         )
@@ -198,7 +198,7 @@ def cmd_cleanup(args):
 
 
 def cmd_add_contributor(args):
-    """Add the PR author as Contributor on the ephemeral workspace.
+    """Add the PR author as Member on the ephemeral workspace.
 
     UPN resolution order:
       1. AAD_UPN_OVERRIDE env var — used as-is (dev/test escape hatch for accounts
