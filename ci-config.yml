@@ -8,7 +8,7 @@
 domain: sales-pipeline
 
 prod_workspace_id: 7aeb9e12-8ad0-421d-82ad-262512491e16
-prod_workspace_name: vibedata-prd-sales-pipeline
+prod_workspace_name: vibedata_prd_sales_pipeline
 prod_lakehouse_id: fe90ede0-e379-446e-9e69-1b487dc71946
 prod_lakehouse_name: lh_prd_salespipeline
 prod_schema: dbo
