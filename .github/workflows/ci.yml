@@ -414,8 +414,6 @@ jobs:
           GH_APP_PEM_KV_NAME: ${{ vars.GH_APP_PEM_KV_NAME }}
           PROD_STATE_ABFSS: ${{ steps.upload-prod-state.outputs.abfss_path }}
           CI_TARGET: ${{ needs.preflight.outputs.ci_target }}
-          ENVIRONMENT_ID: ${{ steps.create-environment.outputs.environment_id }}
-          ENVIRONMENT_NAME: ${{ steps.create-environment.outputs.environment_name }}
         run: python3 ${{ env.SCRIPTS }}/generate_ci_notebook.py
 
       - name: Post workspace comment
