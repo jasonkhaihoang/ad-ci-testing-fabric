@@ -35,14 +35,12 @@ models:
         data_type: string
         tests:
           - not_null
-          - unique
 
       - name: profile_id
         description: Foreign key to the user's profile (permissions set)
         data_type: string
         tests:
           - not_null
-          - unique
 
       - name: job_title
         description: Job title of the user

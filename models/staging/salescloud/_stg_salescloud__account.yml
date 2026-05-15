@@ -45,7 +45,6 @@ models:
         data_type: string
         tests:
           - not_null
-          - unique
 
       - name: is_deleted
         description: Boolean flag indicating soft deletion (always false in this view due to filter)

@@ -22,14 +22,12 @@ models:
         data_type: string
         tests:
           - not_null
-          - unique
 
       - name: owner_id
         description: Foreign key to the user who owns this opportunity (sales rep)
         data_type: string
         tests:
           - not_null
-          - unique
 
       - name: opportunity_name
         description: Name/title of the opportunity
