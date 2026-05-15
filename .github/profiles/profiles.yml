@@ -3,12 +3,6 @@
 # CI workflow always passes --profiles-dir .github/profiles; no collision with ~/.dbt/profiles.yml.
 dbt_fab_spark:
   outputs:
-    # Existing offline DuckDB target — used by dbt-quality.yml and seed/build-empty in Gate 0.
-    dbt_quality:
-      type: duckdb
-      path: /tmp/vibedata_dbt_quality.duckdb
-      threads: 4
-
     # Gates 0 + 1: compile-only Fabric target. Macros resolve to Fabric T-SQL.
     # Dummy GUIDs — no DB connection made for dbt compile / dbt ls / dbt parse.
     dbt_fabric_compile:
@@ -27,14 +21,21 @@ dbt_fab_spark:
     # which is available in the Fabric notebook runtime (unlike az_cli which requires az login).
     # Env vars set by run_dbt_job → setup_environment() before dbt is spawned.
     ephemeral_ci:
-      type: fabricspark
-      method: livy
       authentication: fabric_notebook
+      endpoint: https://msitapi.fabric.microsoft.com/v1
       workspaceid: "{{ env_var('WORKSPACE_ID') }}"
+      workspace_name: "{{ env_var('WORKSPACE_NAME') }}"
       lakehouse: "{{ env_var('LAKEHOUSE') }}"
       lakehouseid: "{{ env_var('LAKEHOUSE_ID') }}"
+      lakehouse_schemas_enabled: true
       schema: "{{ env_var('SCHEMA') }}"
+      method: livy
+      type: fabricspark
+      reuse_livy_session: true
+      session_id_file: "{{ env_var('SESSION_ID_FILE', '') }}"
       spark_config:
-        name: "dbt_ephemeral_ci"
-
-  target: dbt_quality
+        name: "dbt_ci_job_{{ env_var('PR_NUMBER', 'manual') }}"
+      connect_retries: 2
+      connect_timeout: 500
+      threads: 10
+  target: dbt_fabric_compile

@@ -71,6 +71,37 @@ def request(method: str, path: str, body: dict = None, audience: str = "fabric",
     raise RuntimeError(f"Failed after {retries} retries: {method} {path}")
 
 
+def request_multipart(method: str, path: str, file_content: bytes, filename: str, content_type: str = "text/plain", audience: str = "fabric") -> dict:
+    """Fabric REST API call with a multipart/form-data file payload.
+
+    Used for endpoints that require file upload (e.g. staging/libraries).
+    """
+    boundary = b"boundary12345"
+    body = (
+        b"--" + boundary + b"\r\n"
+        b'Content-Disposition: form-data; name="file"; filename="' + filename.encode() + b'"\r\n'
+        b"Content-Type: " + content_type.encode() + b"\r\n"
+        b"\r\n"
+        + file_content +
+        b"\r\n--" + boundary + b"--\r\n"
+    )
+
+    base = _AUDIENCE_BASE_URL[audience]
+    url = f"{base}{path}"
+    token = get_token(audience)
+    req = urllib.request.Request(url, data=body, method=method)
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary.decode()}")
+    try:
+        with urllib.request.urlopen(req) as resp:
+            raw = resp.read()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode(errors="replace")
+        print(f"HTTP {e.code} {method} {url}: {body_text}", file=sys.stderr)
+        raise
+
+
 def request_long_running(
     method: str, path: str, body: dict,
     audience: str = "fabric", timeout_s: int = 120, poll_interval_s: int = 5,
