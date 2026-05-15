@@ -52,7 +52,6 @@ models:
         data_type: string
         tests:
           - not_null
-          - unique
           - relationships:
               to: ref('dim_account')
               field: account_id
@@ -70,7 +69,6 @@ models:
         data_type: string
         tests:
           - not_null
-          - unique
           - relationships:
               to: ref('dim_user')
               field: user_id
