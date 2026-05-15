@@ -158,16 +158,15 @@ def ipynb_to_fabric_py(notebook: dict) -> str:
 
 
 def patch_environment_metadata(notebook: dict, environment_id: str, environment_name: str, workspace_id: str) -> dict:
-    """Patch metadata.dependencies.environment so the notebook uses the bundled Fabric Environment.
+    """Patch metadata.trident.environment so the notebook uses the bundled Fabric Environment.
 
-    Without this, the notebook runs in the default Spark runtime without the
-    pre-installed vd-dbt-fabricspark package.
+    Fabric reads environmentId from metadata.trident.environment at job launch.
+    Without this, the notebook runs without vd-dbt-fabricspark installed.
     Returns a deep copy — input is not mutated.
     """
     nb = copy.deepcopy(notebook)
-    nb.setdefault("metadata", {}).setdefault("dependencies", {})["environment"] = {
-        "id": environment_id,
-        "name": environment_name,
+    nb.setdefault("metadata", {}).setdefault("trident", {})["environment"] = {
+        "environmentId": environment_id,
         "workspaceId": workspace_id,
     }
     return nb
