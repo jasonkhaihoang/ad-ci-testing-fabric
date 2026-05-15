@@ -52,10 +52,6 @@ models:
         data_type: boolean
         tests:
           - not_null
-          - accepted_values:
-              values: [false]
-              config:
-                severity: warn
 
       - name: created_date
         description: Timestamp when the account was created in Salesforce

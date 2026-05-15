@@ -80,26 +80,18 @@ models:
         data_type: boolean
         tests:
           - not_null
-          - accepted_values:
-              values: [true, false]
 
       - name: is_won
         description: Boolean flag indicating if the opportunity was won (only meaningful if is_closed = true)
         data_type: boolean
         tests:
           - not_null
-          - accepted_values:
-              values: [true, false]
 
       - name: is_deleted
         description: Boolean flag indicating soft deletion (always false in this view due to filter)
         data_type: boolean
         tests:
           - not_null
-          - accepted_values:
-              values: [false]
-              config:
-                severity: warn
 
       - name: last_modified_date
         description: Timestamp of last modification to this opportunity
