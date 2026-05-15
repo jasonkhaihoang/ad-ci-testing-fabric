@@ -39,22 +39,18 @@ models:
         data_type: string
         tests:
           - not_null
-          - unique
 
       - name: profile_id
         description: Foreign key to the user's permission profile
         data_type: string
         tests:
           - not_null
-          - unique
 
       - name: is_active
         description: Whether the user account is currently active (inactive users retain historical ownership)
         data_type: boolean
         tests:
           - not_null
-          - accepted_values:
-              values: [true, false]
 
       - name: created_date
         description: When the user record was first created in Salesforce

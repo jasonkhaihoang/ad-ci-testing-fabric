@@ -17,6 +17,10 @@ Environment variables required:
   PROD_STATE_ABFSS (optional, falls back to ./prod-state)
   CI_TARGET (optional, defaults to ephemeral_ci)
   CI_RUN_ID (optional, defaults to "")
+
+Note: vd-dbt-fabricspark is installed at notebook runtime via !pip install (cell 3).
+Fabric Environment pip packages do not apply to Jupyter Python kernels, so the
+environment is used only to configure the workspace-default Spark pool.
 """
 
 import base64
@@ -157,21 +161,6 @@ def ipynb_to_fabric_py(notebook: dict) -> str:
     return "".join(result)
 
 
-def patch_environment_metadata(notebook: dict, environment_id: str, environment_name: str, workspace_id: str) -> dict:
-    """Patch metadata.trident.environment so the notebook uses the bundled Fabric Environment.
-
-    Fabric reads environmentId from metadata.trident.environment at job launch.
-    Without this, the notebook runs without vd-dbt-fabricspark installed.
-    Returns a deep copy — input is not mutated.
-    """
-    nb = copy.deepcopy(notebook)
-    nb.setdefault("metadata", {}).setdefault("trident", {})["environment"] = {
-        "environmentId": environment_id,
-        "workspaceId": workspace_id,
-    }
-    return nb
-
-
 def patch_lakehouse_metadata(notebook: dict, lakehouse_id: str, lakehouse_name: str, workspace_id: str) -> dict:
     """Patch metadata.dependencies.lakehouse to the ephemeral lakehouse.
 
@@ -284,10 +273,6 @@ def main(template_path: Path | None = None) -> None:
     )
     notebook = inject_parameters_cell(notebook, params_source)
     notebook = patch_lakehouse_metadata(notebook, lakehouse_id, lakehouse_name, workspace_id)
-    environment_id = os.environ.get("ENVIRONMENT_ID", "").strip()
-    environment_name = os.environ.get("ENVIRONMENT_NAME", "").strip()
-    if environment_id and environment_name:
-        notebook = patch_environment_metadata(notebook, environment_id, environment_name, workspace_id)
     transient_id = upload_notebook(workspace_id, "ci-transient-notebook", notebook)
     if transient_id:
         runner_io.set_output("notebook_id", transient_id)
@@ -296,8 +281,6 @@ def main(template_path: Path | None = None) -> None:
         interactive = json.load(f)
     interactive = inject_parameters_cell(interactive, params_source)
     interactive = patch_lakehouse_metadata(interactive, lakehouse_id, lakehouse_name, workspace_id)
-    if environment_id and environment_name:
-        interactive = patch_environment_metadata(interactive, environment_id, environment_name, workspace_id)
     upload_notebook(workspace_id, "ci-interactive-notebook", interactive)
 
 

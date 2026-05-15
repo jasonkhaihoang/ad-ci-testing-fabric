@@ -19,7 +19,6 @@ models:
         data_type: string
         tests:
           - not_null
-          - unique
           - relationships:
               to: ref('stg_salescloud__opportunity')
               field: opportunity_id
@@ -29,14 +28,12 @@ models:
         data_type: string
         tests:
           - not_null
-          - unique
 
       - name: product_id
         description: Foreign key to the Product2 object (Product2Id in Salesforce)
         data_type: string
         tests:
           - not_null
-          - unique
 
       - name: product_name
         description: Name of the product or service being sold in this line item

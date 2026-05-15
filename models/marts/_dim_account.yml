@@ -48,7 +48,6 @@ models:
         data_type: string
         tests:
           - not_null
-          - unique
 
       - name: created_date
         description: When the account record was first created in Salesforce

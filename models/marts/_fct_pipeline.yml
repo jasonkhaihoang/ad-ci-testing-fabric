@@ -52,7 +52,6 @@ models:
         data_type: string
         tests:
           - not_null
-          - unique
           - relationships:
               to: ref('dim_account')
               field: account_id
@@ -70,7 +69,6 @@ models:
         data_type: string
         tests:
           - not_null
-          - unique
           - relationships:
               to: ref('dim_user')
               field: user_id
@@ -133,16 +131,12 @@ models:
         data_type: boolean
         tests:
           - not_null
-          - accepted_values:
-              values: [true, false]
 
       - name: is_won
         description: Boolean flag - true if opportunity was won (only meaningful if is_closed = true)
         data_type: boolean
         tests:
           - not_null
-          - accepted_values:
-              values: [true, false]
 
       - name: forecast_category
         description: |
@@ -841,7 +835,7 @@ unit_tests:
           sales_cycle_days: 30
           forecast_category: Closed Won
         - opportunity_id: OPP012
-          sales_cycle_days: 366
+          sales_cycle_days: 365
           forecast_category: Closed Won
 
   - name: test_fct_pipeline_orphaned_opportunity

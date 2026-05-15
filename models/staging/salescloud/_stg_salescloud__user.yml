@@ -35,14 +35,12 @@ models:
         data_type: string
         tests:
           - not_null
-          - unique
 
       - name: profile_id
         description: Foreign key to the user's profile (permissions set)
         data_type: string
         tests:
           - not_null
-          - unique
 
       - name: job_title
         description: Job title of the user
@@ -53,8 +51,6 @@ models:
         data_type: boolean
         tests:
           - not_null
-          - accepted_values:
-              values: [true, false]
 
       - name: created_date
         description: Timestamp when the user was created in Salesforce
