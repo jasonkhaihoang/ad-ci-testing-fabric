@@ -7,12 +7,12 @@ The output JSON is consumed by Slice 2's `fabric_api.py seed-shortcuts` subcomma
 Logic:
 1. Detect greenfield (`prod-state/source.json.mode == "greenfield"`, or sidecar
    absent) → emit `[]` and zero_state="greenfield".
-2. Run `dbt ls --select state:modified --resource-type model snapshot
-   --state ./prod-state --output json` to identify the modified set.
+2. Run `dbt ls --select state:modified+ --resource-type model snapshot
+   --state ./prod-state --output json` to identify the build closure.
    Empty result → `[]` and zero_state="no-modified-models".
 3. Walk `depends_on.nodes` recursively in the current-branch manifest from each
-   modified node, collecting upstreams.
-4. Filter to source.*, snapshot.*, and unmodified non-ephemeral model.*.
+   node in the build closure, collecting upstreams.
+4. Filter to source.* only — model.* and snapshot.* resolve to prod via --defer.
 5. Resolve schema/alias/path: prod manifest is truth for unmodified models and
    snapshots; current-branch manifest for sources.
 6. If all upstreams were modified themselves → `[]` and zero_state="no-upstreams".
@@ -131,7 +131,7 @@ def derive_shortcuts(
             continue
         if _is_non_physical_model(node):
             continue
-        if not (uid.startswith("source.") or uid.startswith("snapshot.") or uid.startswith("model.")):
+        if not uid.startswith("source."):
             continue
         candidates.append((uid, node))
 
@@ -169,12 +169,12 @@ def _run_dbt_ls() -> List[str]:
     result = subprocess.run(
         [
             "dbt", "ls",
-            "--select", "state:modified",
+            "--select", "state:modified+",
             "--resource-type", "model", "snapshot",
             "--state", "./prod-state",
             "--output", "json",
             "--profiles-dir", ".github/profiles",
-            "--target", "dbt_quality",
+            "--target", "dbt_fabric_compile",
         ],
         capture_output=True, text=True,
     )

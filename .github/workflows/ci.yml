@@ -43,7 +43,6 @@ jobs:
       prod_lakehouse_id: ${{ steps.config.outputs.prod_lakehouse_id }}
       prod_lakehouse_name: ${{ steps.config.outputs.prod_lakehouse_name }}
       prod_schema: ${{ steps.config.outputs.prod_schema }}
-      notebook_glob: ${{ steps.config.outputs.notebook_glob }}
       ci_target: ${{ steps.config.outputs.ci_target }}
       ephemeral_name: ${{ steps.names.outputs.ephemeral_name }}
     steps:
@@ -143,7 +142,7 @@ jobs:
               c = yaml.safe_load(f)
 
           required = ["domain", "prod_workspace_id", "prod_workspace_name",
-                      "prod_lakehouse_id", "prod_lakehouse_name", "prod_schema", "notebook_glob"]
+                      "prod_lakehouse_id", "prod_lakehouse_name", "prod_schema"]
           missing = [k for k in required if k not in c]
           if missing:
               print(f"::error::ci-config.yml is missing required keys: {missing}", file=sys.stderr)
@@ -159,7 +158,8 @@ jobs:
       - name: Compute ephemeral workspace name
         id: names
         run: |
-          NAME="vibedata-ephemeral-${{ github.event.repository.name }}-${{ github.event.pull_request.number }}"
+          REPO=$(echo "${{ github.event.repository.name }}" | tr '-' '_')
+          NAME="vibedata_ephemeral_${REPO}_${{ github.event.pull_request.number }}"
           echo "ephemeral_name=${NAME}" >> "$GITHUB_OUTPUT"
           echo "Ephemeral workspace name: ${NAME}"
 
@@ -180,7 +180,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - run: pip install pyyaml "dbt-core>=1.8" "dbt-duckdb>=1.8" "dbt-fabricspark>=1.8" --quiet
+      - run: pip install pyyaml "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
 
       - name: Emit Gate 1 pending
         env:
@@ -283,7 +283,7 @@ jobs:
     outputs:
       ephemeral_workspace_id: ${{ steps.provision.outputs.workspace_id }}
       ephemeral_lakehouse_id: ${{ steps.provision.outputs.lakehouse_id }}
-      notebook_id: ${{ steps.inject-notebook.outputs.notebook_id }}
+      notebook_id: ${{ steps.generate-notebook.outputs.notebook_id }}
     steps:
       - uses: actions/checkout@v4
 
@@ -319,6 +319,27 @@ jobs:
           EPHEMERAL_NAME: ${{ needs.preflight.outputs.ephemeral_name }}
         run: python3 ${{ env.SCRIPTS }}/fabric_api.py provision --name "$EPHEMERAL_NAME"
 
+      - name: Create Fabric Environment from bundle
+        id: create-environment
+        run: |
+          python3 ${{ env.SCRIPTS }}/fabric_api.py create-environment \
+            --workspace-id "${{ steps.provision.outputs.workspace_id }}" \
+            --config .github/environment/ephemeral-ci-environment.yaml
+
+      - name: Publish Fabric Environment (Full Mode)
+        id: publish-environment
+        run: |
+          python3 ${{ env.SCRIPTS }}/fabric_api.py publish-environment \
+            --workspace-id "${{ steps.provision.outputs.workspace_id }}" \
+            --environment-id "${{ steps.create-environment.outputs.environment_id }}"
+
+      - name: Set Environment as workspace default
+        run: |
+          python3 ${{ env.SCRIPTS }}/fabric_api.py set-workspace-default-environment \
+            --workspace-id "${{ steps.provision.outputs.workspace_id }}" \
+            --environment-name "${{ steps.create-environment.outputs.environment_name }}" \
+            --runtime-version "${{ steps.create-environment.outputs.runtime_version }}"
+
       - name: Add PR author as Contributor on ephemeral workspace
         env:
           AAD_DOMAIN: ${{ vars.AAD_DOMAIN }}
@@ -350,7 +371,7 @@ jobs:
 
       - name: Install dbt and parse current branch
         run: |
-          pip install "dbt-core>=1.8" "dbt-duckdb>=1.8" "dbt-fabricspark>=1.8" --quiet
+          pip install "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
           dbt deps --quiet
           dbt parse --profiles-dir .github/profiles --target dbt_fabric_compile --quiet
 
@@ -378,14 +399,13 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-      - name: Inject notebook into ephemeral workspace
-        id: inject-notebook
+      - name: Generate and deploy CI notebook
+        id: generate-notebook
         env:
           AZURE_KEYVAULT_URL: ${{ vars.AZURE_KEYVAULT_URL }}
           EPHEMERAL_WORKSPACE_ID: ${{ steps.provision.outputs.workspace_id }}
           EPHEMERAL_WORKSPACE_NAME: ${{ needs.preflight.outputs.ephemeral_name }}
           EPHEMERAL_LAKEHOUSE_ID: ${{ steps.provision.outputs.lakehouse_id }}
-          NOTEBOOK_GLOB: ${{ needs.preflight.outputs.notebook_glob }}
           HEAD_BRANCH: ${{ github.head_ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REPO_URL: ${{ github.event.repository.clone_url }}
@@ -394,7 +414,9 @@ jobs:
           GH_APP_PEM_KV_NAME: ${{ vars.GH_APP_PEM_KV_NAME }}
           PROD_STATE_ABFSS: ${{ steps.upload-prod-state.outputs.abfss_path }}
           CI_TARGET: ${{ needs.preflight.outputs.ci_target }}
-        run: python3 ${{ env.SCRIPTS }}/inject_notebook.py
+          ENVIRONMENT_ID: ${{ steps.create-environment.outputs.environment_id }}
+          ENVIRONMENT_NAME: ${{ steps.create-environment.outputs.environment_name }}
+        run: python3 ${{ env.SCRIPTS }}/generate_ci_notebook.py
 
       - name: Post workspace comment
         if: always()
@@ -424,7 +446,7 @@ jobs:
 
       - name: Install analysis tools
         run: |
-          pip install ruff sqlfluff pyyaml "dbt-core>=1.8" "dbt-duckdb>=1.8" "dbt-fabricspark>=1.8" --quiet
+          pip install ruff sqlfluff pyyaml "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
           curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
             | tar xz -C /usr/local/bin gitleaks
 
@@ -492,51 +514,6 @@ jobs:
             compile --profiles-dir .github/profiles --target dbt_fabric_compile \
             --exclude package:elementary || true
 
-      - name: Setup DuckDB source tables for offline build
-        continue-on-error: true
-        run: |
-          python3 - <<'PYEOF'
-          import duckdb, os
-          db_path = '/tmp/vibedata_dbt_quality.duckdb'
-          if not os.path.exists(db_path):
-              print("DuckDB file not found, skipping source setup")
-          else:
-              con = duckdb.connect(db_path)
-              tables = {
-                  "account": "id VARCHAR, name VARCHAR, type VARCHAR, industry VARCHAR, billingcity VARCHAR, billingstate VARCHAR, billingcountry VARCHAR, ownerid VARCHAR, isdeleted BOOLEAN, createddate TIMESTAMP, lastmodifieddate TIMESTAMP",
-                  "user": "id VARCHAR, name VARCHAR, email VARCHAR, username VARCHAR, userroleid VARCHAR, profileid VARCHAR, title VARCHAR, isactive BOOLEAN, createddate TIMESTAMP, lastmodifieddate TIMESTAMP",
-                  "opportunity": "id VARCHAR, accountid VARCHAR, ownerid VARCHAR, name VARCHAR, stagename VARCHAR, type VARCHAR, leadsource VARCHAR, amount DECIMAL, probability INTEGER, expectedrevenue DECIMAL, createddate TIMESTAMP, closedate DATE, laststagechangedate DATE, isclosed BOOLEAN, iswon BOOLEAN, isdeleted BOOLEAN, lastmodifieddate TIMESTAMP, systemmodstamp TIMESTAMP",
-                  "opportunitylineitem": "Id VARCHAR, OpportunityId VARCHAR, PricebookEntryId VARCHAR, Product2Id VARCHAR, Name VARCHAR, ProductCode VARCHAR, Quantity DOUBLE, UnitPrice DOUBLE, TotalPrice DOUBLE, Discount DOUBLE, Description VARCHAR, ServiceDate DATE, SortOrder INTEGER, CreatedDate TIMESTAMP",
-                  "opportunityhistory": "id VARCHAR, opportunityid VARCHAR, stagename VARCHAR, createddate TIMESTAMP",
-              }
-              try:
-                  con.execute("CREATE SCHEMA IF NOT EXISTS salescloud")
-                  for t, cols in tables.items():
-                      con.execute(f"CREATE TABLE IF NOT EXISTS salescloud.{t} ({cols})")
-              except Exception as e:
-                  print(f"DuckDB source setup warning: {e}")
-              finally:
-                  con.close()
-          PYEOF
-
-      - name: dbt seed (populate raw schema for dbt build --empty)
-        continue-on-error: true
-        run: |
-          dbt seed --profiles-dir .github/profiles --target dbt_quality --quiet 2>/dev/null || true
-
-      - name: dbt build --empty
-        continue-on-error: true
-        env:
-          WORKSPACE_ID: dummy
-          WORKSPACE_NAME: dummy
-          LAKEHOUSE: dummy
-          LAKEHOUSE_ID: dummy
-          SCHEMA: dummy
-        run: |
-          python3 ${{ env.SCRIPTS }}/dbt_error_report.py reports/dbt_build_empty.json \
-            build --empty --profiles-dir .github/profiles --target dbt_quality \
-            --select "models/staging/**" --exclude package:elementary resource_type:unit_test || true
-
       - name: Schema gate
         continue-on-error: true
         if: always()
@@ -579,7 +556,6 @@ jobs:
                   return None
 
           compile_result    = load("reports/dbt_compile.json")
-          build_empty_result = load("reports/dbt_build_empty.json")
           schema_gate       = load("reports/schema_gate.json")
           ruff              = load("reports/ruff.json")
           sqlfluff          = load("reports/sqlfluff.json")
@@ -588,7 +564,7 @@ jobs:
           shortcut_seeding  = load("reports/shortcut_seeding.json")
 
           body = render_gate_0_comment(
-              compile_result, build_empty_result, schema_gate,
+              compile_result, schema_gate,
               ruff=ruff, sqlfluff=sqlfluff, gitleaks=gitleaks,
               scorecard=scorecard, shortcut_seeding=shortcut_seeding,
           )
@@ -646,7 +622,6 @@ jobs:
               ("sqlfluff", sqlfluff_ok, "reports/sqlfluff.json"),
               ("gitleaks", gitleaks_ok, "reports/gitleaks.json"),
               ("dbt compile", passed_field_ok, "reports/dbt_compile.json"),
-              ("dbt build --empty", passed_field_ok, "reports/dbt_build_empty.json"),
               ("schema gate", passed_field_ok, "reports/schema_gate.json"),
               ("dbt scorecard", passed_field_ok, "reports/scorecard.json"),
           ]
@@ -852,7 +827,7 @@ jobs:
   gate-4-data-test:
     name: "gate 4: data tests"
     needs: [provision, gate-2-write]
-    if: github.event.action != 'closed' && needs.gate-2-write.result == 'success'
+    if: always() && github.event.action != 'closed'
     timeout-minutes: 12
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-4
@@ -875,6 +850,7 @@ jobs:
           allow-no-subscriptions: true
 
       - name: Run Gate 4
+        if: needs.gate-2-write.result == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -932,6 +908,7 @@ jobs:
           allow-no-subscriptions: true
 
       - name: Delete ephemeral workspace
-        env:
-          EPHEMERAL_NAME: vibedata-ephemeral-${{ github.event.repository.name }}-${{ github.event.pull_request.number }}
-        run: python3 ${{ env.SCRIPTS }}/fabric_api.py teardown --name "$EPHEMERAL_NAME"
+        run: |
+          REPO=$(echo "${{ github.event.repository.name }}" | tr '-' '_')
+          EPHEMERAL_NAME="vibedata_ephemeral_${REPO}_${{ github.event.pull_request.number }}"
+          python3 ${{ env.SCRIPTS }}/fabric_api.py teardown --name "$EPHEMERAL_NAME"

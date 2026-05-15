@@ -49,7 +49,8 @@ jobs:
           DBT_JOB_NAME: dbt-quality
         run: |
           dbt compile \
-            --profiles-dir .github/profiles \
+            --profiles-dir .github/profiles/dbt-quality \
+            --profile dbt_project_quality_profile \
             --target dbt_quality \
             --quiet 2>/dev/null || true
 
@@ -57,7 +58,8 @@ jobs:
         run: |
           dbt build \
             --select dbt_project_evaluator \
-            --profiles-dir .github/profiles \
+            --profiles-dir .github/profiles/dbt-quality \
+            --profile dbt_project_quality_profile \
             --target dbt_quality \
             --quiet || true
 

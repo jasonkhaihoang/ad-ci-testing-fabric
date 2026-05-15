@@ -9,7 +9,7 @@ Commands:
                    Find workspace by name and delete it. Exits cleanly if not found.
 
   cleanup          --repo OWNER/REPO
-                   List all vibedata-ephemeral-* workspaces. Delete those whose PR is closed.
+                   List all vibedata_ephemeral_* workspaces. Delete those whose PR is closed.
 
   add-contributor  --workspace-id ID --github-login LOGIN
                    Add the PR author as Member via the Power BI REST API.
@@ -36,16 +36,19 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
-
-import fabric_transport
-import runner_io
+import yaml
 
 try:
+    from scripts import fabric_transport
+    from scripts import runner_io
     from scripts import shortcut_seeding_report
 except ImportError:  # invoked as `python3 path/to/fabric_api.py`
+    import fabric_transport
+    import runner_io
     import shortcut_seeding_report
 
 
@@ -158,14 +161,14 @@ def cmd_cleanup(args):
     resp = fabric_transport.request("GET", "/workspaces")
     ephemeral = [
         ws for ws in resp.get("value", [])
-        if ws["displayName"].startswith("vibedata-ephemeral-")
+        if ws["displayName"].startswith("vibedata_ephemeral_")
     ]
     print(f"Found {len(ephemeral)} ephemeral workspace(s).", flush=True)
     deleted = 0
 
     for ws in ephemeral:
         name = ws["displayName"]
-        parts = name.split("-")
+        parts = name.split("_")
         if len(parts) < 3 or not parts[-1].isdigit():
             continue
         pr_number = parts[-1]
@@ -261,10 +264,18 @@ def cmd_upload_file(args):
 
 
 def _build_shortcut_body(entry: dict) -> dict:
-    """Pure: derive the Fabric Shortcuts API request body from a manifest entry."""
+    """Pure: derive the Fabric Shortcuts API request body from a manifest entry.
+
+    source_path is e.g. "Tables/raw/opportunity" — the shortcut must land at the
+    same schema-qualified path in the ephemeral lakehouse so dbt can resolve
+    raw.opportunity with lakehouse_schemas_enabled: true.
+    """
+    parts = entry["source_path"].rsplit("/", 1)
+    path = parts[0] if len(parts) == 2 else "Tables"
+    name = parts[-1]
     return {
-        "name": entry["alias"],
-        "path": "Tables",
+        "name": name,
+        "path": path,
         "target": {
             "oneLake": {
                 "workspaceId": entry["source_workspace_id"],
@@ -338,6 +349,127 @@ def cmd_seed_shortcuts(args):
     seed_shortcuts(args.from_file, args.workspace_id, args.lakehouse_id)
 
 
+def _find_existing_environment(workspace_id: str, env_name: str) -> str | None:
+    """Return item ID of an existing environment with the given display name, or None."""
+    resp = fabric_transport.request("GET", f"/workspaces/{workspace_id}/environments")
+    for item in resp.get("value", []):
+        if item.get("displayName") == env_name:
+            return item["id"]
+    return None
+
+
+def create_environment(workspace_id: str, config_path: str) -> str:
+    """Create or reuse a Fabric Environment from a YAML definition and upload pip packages.
+
+    Returns the environment ID. Emits environment_id and environment_name to GITHUB_OUTPUT.
+    Idempotent: if an environment with the same name already exists, reuses it.
+    """
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    env_name = config["name"]
+    runtime_version = config.get("runtime_version", "1.3")
+
+    # Create or reuse the environment
+    env_id = _find_existing_environment(workspace_id, env_name)
+    if env_id:
+        print(f"Reusing existing environment '{env_name}' ({env_id})", flush=True)
+    else:
+        resp = fabric_transport.request(
+            "POST",
+            f"/workspaces/{workspace_id}/environments",
+            {"displayName": env_name},
+        )
+        env_id = resp["id"]
+        print(f"Created environment '{env_name}' ({env_id})", flush=True)
+
+    # Configure spark compute if specified
+    spark_pool = config.get("spark_pool", {})
+    if spark_pool:
+        sparkcompute_body = {
+            "nodeSize": spark_pool.get("node_size", "Small"),
+            "autoscale": spark_pool.get("auto_scale", {}),
+        }
+        fabric_transport.request(
+            "PATCH",
+            f"/workspaces/{workspace_id}/environments/{env_id}/staging/sparkcompute",
+            {**sparkcompute_body, "runtimeVersion": runtime_version},
+        )
+        print(f"Configured spark compute: {sparkcompute_body}", flush=True)
+
+    # Upload pip packages to staging/libraries — API requires multipart/form-data environment.yml
+    pip_packages = config.get("pip_packages", [])
+    if pip_packages:
+        pip_lines = "\n".join(f"    - {pkg}" for pkg in pip_packages)
+        env_yml = f"dependencies:\n  - pip:\n{pip_lines}\n".encode()
+        fabric_transport.request_multipart(
+            "POST",
+            f"/workspaces/{workspace_id}/environments/{env_id}/staging/libraries",
+            file_content=env_yml,
+            filename="environment.yml",
+        )
+        print(f"Uploaded pip packages: {pip_packages}", flush=True)
+
+    runner_io.set_output("environment_id", env_id)
+    runner_io.set_output("environment_name", env_name)
+    runner_io.set_output("runtime_version", runtime_version)
+    return env_id
+
+
+def cmd_create_environment(args):
+    create_environment(args.workspace_id, args.config)
+
+
+def publish_environment(workspace_id: str, environment_id: str, poll_interval: int = 30) -> None:
+    """Trigger Full Mode publish for the Fabric Environment and block until Succeeded.
+
+    Full Mode publish pre-bakes libraries into the runtime (~10–15 min).
+    Raises RuntimeError if publish state is 'Failed'.
+    """
+    fabric_transport.request(
+        "POST",
+        f"/workspaces/{workspace_id}/environments/{environment_id}/staging/publish",
+    )
+    print(f"Environment publish triggered. Polling every {poll_interval}s...", flush=True)
+
+    while True:
+        time.sleep(poll_interval)
+        resp = fabric_transport.request(
+            "GET",
+            f"/workspaces/{workspace_id}/environments/{environment_id}",
+        )
+        state = resp.get("properties", {}).get("publishDetails", {}).get("state", "")
+        print(f"  publish state: {state}", flush=True)
+        if state == "Success":
+            print("Environment published successfully.", flush=True)
+            return
+        if state in ("Failed", "Cancelled"):
+            raise RuntimeError(
+                f"Environment publish {state} for environment {environment_id}"
+            )
+
+
+def cmd_publish_environment(args):
+    publish_environment(args.workspace_id, args.environment_id)
+
+
+def set_workspace_default_environment(
+    workspace_id: str, environment_name: str, runtime_version: str = "1.3"
+) -> None:
+    """Set the named Environment as the workspace's default Spark Environment.
+
+    Uses the Environment name (not GUID) per the Fabric Workspace settings API.
+    Requires Admin role on the workspace.
+    """
+    body = {"environment": {"name": environment_name, "runtimeVersion": runtime_version}}
+    fabric_transport.request("PATCH", f"/workspaces/{workspace_id}/spark/settings", body)
+    print(f"Workspace default environment set to '{environment_name}'.", flush=True)
+
+
+def cmd_set_workspace_default_environment(args):
+    set_workspace_default_environment(args.workspace_id, args.environment_name, args.runtime_version)
+
+
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 def main():
@@ -358,6 +490,16 @@ def main():
     p3.add_argument("--from-file", required=True)
     p3.add_argument("--workspace-id", required=True)
     p3.add_argument("--lakehouse-id", required=True)
+    p4 = sub.add_parser("create-environment")
+    p4.add_argument("--workspace-id", required=True)
+    p4.add_argument("--config", required=True, help="Path to ephemeral-ci-environment.yaml")
+    p5 = sub.add_parser("publish-environment")
+    p5.add_argument("--workspace-id", required=True)
+    p5.add_argument("--environment-id", required=True)
+    p6 = sub.add_parser("set-workspace-default-environment")
+    p6.add_argument("--workspace-id", required=True)
+    p6.add_argument("--environment-name", required=True)
+    p6.add_argument("--runtime-version", default="1.3")
     args = parser.parse_args()
     {
         "provision": cmd_provision,
@@ -366,6 +508,9 @@ def main():
         "add-contributor": cmd_add_contributor,
         "upload-file": cmd_upload_file,
         "seed-shortcuts": cmd_seed_shortcuts,
+        "create-environment": cmd_create_environment,
+        "publish-environment": cmd_publish_environment,
+        "set-workspace-default-environment": cmd_set_workspace_default_environment,
     }[args.command](args)
 
 

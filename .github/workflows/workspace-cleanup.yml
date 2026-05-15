@@ -1,6 +1,6 @@
 # Orphaned Ephemeral Workspace Cleanup
 #
-# Triggered daily or manually. Deletes vibedata-ephemeral-* Fabric workspaces
+# Triggered daily or manually. Deletes vibedata_ephemeral_* Fabric workspaces
 # whose PR has been closed or no longer exists in THIS domain repo.
 
 name: Orphaned Workspace Cleanup
