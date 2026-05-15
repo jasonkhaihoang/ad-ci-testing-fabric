@@ -133,16 +133,12 @@ models:
         data_type: boolean
         tests:
           - not_null
-          - accepted_values:
-              values: [true, false]
 
       - name: is_won
         description: Boolean flag - true if opportunity was won (only meaningful if is_closed = true)
         data_type: boolean
         tests:
           - not_null
-          - accepted_values:
-              values: [true, false]
 
       - name: forecast_category
         description: |

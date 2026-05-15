@@ -53,8 +53,6 @@ models:
         data_type: boolean
         tests:
           - not_null
-          - accepted_values:
-              values: [true, false]
 
       - name: created_date
         description: When the user record was first created in Salesforce
