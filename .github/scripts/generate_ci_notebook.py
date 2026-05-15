@@ -187,7 +187,8 @@ def find_existing_notebook(workspace_id: str, display_name: str) -> str | None:
 def upload_notebook(workspace_id: str, display_name: str, notebook: dict) -> str | None:
     """Create or update a notebook in the Fabric workspace via Items API.
 
-    Returns the notebook item ID (emits to GITHUB_OUTPUT as notebook_id).
+    Returns the notebook item ID. Callers are responsible for emitting
+    notebook_id to GITHUB_OUTPUT when needed.
     """
     nb_content = base64.b64encode(ipynb_to_fabric_py(notebook).encode()).decode()
     definition = {
@@ -218,7 +219,6 @@ def upload_notebook(workspace_id: str, display_name: str, notebook: dict) -> str
 
     print(f"Notebook '{display_name}' is now available in the workspace.", flush=True)
     if notebook_id:
-        runner_io.set_output("notebook_id", notebook_id)
         print(f"Notebook ID: {notebook_id}", flush=True)
 
     return notebook_id
@@ -269,7 +269,9 @@ def main(template_path: Path | None = None) -> None:
     )
     notebook = inject_parameters_cell(notebook, params_source)
     notebook = patch_lakehouse_metadata(notebook, lakehouse_id, lakehouse_name, workspace_id)
-    upload_notebook(workspace_id, "ci-transient-notebook", notebook)
+    transient_id = upload_notebook(workspace_id, "ci-transient-notebook", notebook)
+    if transient_id:
+        runner_io.set_output("notebook_id", transient_id)
 
     with open(_BUNDLE_INTERACTIVE) as f:
         interactive = json.load(f)
