@@ -804,12 +804,36 @@ def render_gate_0_comment(
     return "\n".join(parts)
 
 
-def render_gate_1_comment(greenfield: bool) -> str:
+def render_gate_1_comment(
+    closure: list[dict], *, greenfield: bool, passed: bool
+) -> str:
+    """Render the ci/state-modified+ PR comment with the model closure table."""
+    icon = _icon(passed)
+    heading = f"## Gate 1 — Compile-time Logic {icon}"
+
+    if not passed and not closure:
+        return (
+            f"{GATE_1_MARKER}\n"
+            f"{heading}\n\n"
+            "Gate failed before the model closure was resolved — see CI logs.\n"
+        )
+
     if greenfield:
-        detail = "Running **greenfield** build (no prod manifest available — full build)."
+        mode_line = "> ⚠️ **Greenfield** — full graph selected (no prod baseline available)\n"
     else:
-        detail = "Running **incremental** (slim CI) build using prod manifest."
-    return f"{GATE_1_MARKER}\n## Gate 1 — Manifest ✅\n\n{detail}\n"
+        n = len(closure)
+        mode_line = f"> **Incremental** — {n} model(s) in `state:modified+` scope\n"
+
+    if not closure:
+        return f"{GATE_1_MARKER}\n{heading}\n\n{mode_line}\n_No modified models in scope._\n"
+
+    rows = "\n".join(
+        f"| `{item['name']}` | `{item['materialization']}` |"
+        for item in closure
+    )
+    table = "| Model | Materialization |\n|-------|----------------|\n" + rows + "\n"
+    note = "_Project-owned models only — dbt package models (e.g. Elementary) are excluded._\n"
+    return f"{GATE_1_MARKER}\n{heading}\n\n{mode_line}\n{table}\n{note}"
 
 
 def render_gate_2_comment(result) -> str:

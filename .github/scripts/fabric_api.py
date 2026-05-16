@@ -349,6 +349,60 @@ def cmd_seed_shortcuts(args):
     seed_shortcuts(args.from_file, args.workspace_id, args.lakehouse_id)
 
 
+# ─── Cancel in-flight jobs ────────────────────────────────────────────────────
+
+def cancel_running_jobs(workspace_name: str) -> None:
+    """Cancel all InProgress/NotStarted Fabric notebook Item Jobs in the workspace.
+
+    No-op when the workspace does not exist (first push — workspace not yet created).
+    404 on cancel is treated as success (job already reached a terminal state).
+    Any other HTTP error propagates, causing provision to fail.
+    """
+    ws = find_workspace_by_name(workspace_name)
+    if ws is None:
+        print(f"Workspace '{workspace_name}' not found — no jobs to cancel.", flush=True)
+        return
+
+    workspace_id = ws["id"]
+    resp = fabric_transport.request("GET", f"/workspaces/{workspace_id}/items")
+    notebooks = [item for item in resp.get("value", []) if item.get("type") == "Notebook"]
+    print(f"Found {len(notebooks)} notebook(s) in workspace.", flush=True)
+
+    cancelled = 0
+    for notebook in notebooks:
+        notebook_id = notebook["id"]
+        notebook_name = notebook.get("displayName", notebook_id)
+        jobs_resp = fabric_transport.request(
+            "GET", f"/workspaces/{workspace_id}/items/{notebook_id}/jobs/instances"
+        )
+        active_jobs = [
+            j for j in jobs_resp.get("value", [])
+            if j.get("status") in ("InProgress", "NotStarted")
+        ]
+        for job in active_jobs:
+            job_id = job["id"]
+            try:
+                fabric_transport.request(
+                    "POST",
+                    f"/workspaces/{workspace_id}/items/{notebook_id}/jobs/instances/{job_id}/cancel",
+                )
+                cancelled += 1
+                print(f"Cancelled job {job_id} on notebook '{notebook_name}'.", flush=True)
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    print(
+                        f"Job {job_id} already terminal (404) — treating as success.", flush=True
+                    )
+                else:
+                    raise
+
+    print(f"cancel-running-jobs complete: {cancelled} job(s) cancelled.", flush=True)
+
+
+def cmd_cancel_running_jobs(args):
+    cancel_running_jobs(args.name)
+
+
 def _find_existing_environment(workspace_id: str, env_name: str) -> str | None:
     """Return item ID of an existing environment with the given display name, or None."""
     resp = fabric_transport.request("GET", f"/workspaces/{workspace_id}/environments")
@@ -424,8 +478,18 @@ def publish_environment(workspace_id: str, environment_id: str, poll_interval: i
     """Trigger Full Mode publish for the Fabric Environment and block until Succeeded.
 
     Full Mode publish pre-bakes libraries into the runtime (~10–15 min).
+    Skips the publish POST when the environment is already in a 'Success' state.
     Raises RuntimeError if publish state is 'Failed'.
     """
+    resp = fabric_transport.request(
+        "GET",
+        f"/workspaces/{workspace_id}/environments/{environment_id}",
+    )
+    current_state = resp.get("properties", {}).get("publishDetails", {}).get("state", "")
+    if current_state == "Success":
+        print("Environment already published — skipping publish.", flush=True)
+        return
+
     fabric_transport.request(
         "POST",
         f"/workspaces/{workspace_id}/environments/{environment_id}/staging/publish",
@@ -500,6 +564,8 @@ def main():
     p6.add_argument("--workspace-id", required=True)
     p6.add_argument("--environment-name", required=True)
     p6.add_argument("--runtime-version", default="1.3")
+    p7 = sub.add_parser("cancel-running-jobs")
+    p7.add_argument("--name", required=True)
     args = parser.parse_args()
     {
         "provision": cmd_provision,
@@ -511,6 +577,7 @@ def main():
         "create-environment": cmd_create_environment,
         "publish-environment": cmd_publish_environment,
         "set-workspace-default-environment": cmd_set_workspace_default_environment,
+        "cancel-running-jobs": cmd_cancel_running_jobs,
     }[args.command](args)
 
 

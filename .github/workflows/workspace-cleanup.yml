@@ -27,7 +27,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - run: pip install requests --quiet
+      - run: pip install requests pyyaml --quiet
 
       - name: Login — Fabric UAMI
         uses: azure/login@v2
