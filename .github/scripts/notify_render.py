@@ -374,6 +374,105 @@ def render_gate_4(result: dict | None) -> str:
     )
 
 
+def render_gate_5(result: dict | None) -> str:
+    if not result:
+        return ""
+    overall = result.get("overall_status", "")
+    passed = overall == "pass"
+    artifacts = result.get("artifacts") or []
+
+    brand_new = [a for a in artifacts if a.get("baseline") is None]
+    existing = [a for a in artifacts if a.get("baseline") is not None]
+
+    head = f"## Gate 5 — Data-Diff vs Prod {_icon(passed)}\n\n"
+
+    if not artifacts:
+        return head + "_No artifacts in diff scope._\n"
+
+    n_diff = sum(
+        1 for a in existing
+        if _has_schema_diff(a.get("schema_delta") or {})
+        or (a.get("row_count_delta") or {}).get("delta", 0) != 0
+        or (
+            (a.get("value_delta") or {}).get("rows_with_diffs", 0) > 0
+            and not (a.get("value_delta") or {}).get("skipped_no_unique_key", False)
+        )
+    )
+    summary_parts = []
+    if brand_new:
+        summary_parts.append(f"{len(brand_new)} brand-new")
+    if existing:
+        summary_parts.append(f"{len(existing)} compared")
+    if n_diff:
+        summary_parts.append(f"{n_diff} with diff")
+    head += " · ".join(summary_parts) + "\n"
+
+    sections = [head]
+
+    if brand_new:
+        rows = "\n".join(
+            f"| `{a['name']}` | `{a.get('materialized', '')}` |"
+            for a in brand_new
+        )
+        sections.append(
+            "\n<details>\n<summary>Brand-new artifacts (auto-pass)</summary>\n\n"
+            "| Artifact | Materialization |\n"
+            "|----------|-----------------|\n"
+            + rows
+            + "\n\n</details>\n"
+        )
+
+    if existing:
+        rows = "\n".join(
+            f"| `{a['name']}` | `{a.get('materialized', '')}` "
+            f"| {_render_schema_delta_cell(a.get('schema_delta') or {})} "
+            f"| {(a.get('row_count_delta') or {}).get('prod', 0)} → {(a.get('row_count_delta') or {}).get('pr', 0)} ({(a.get('row_count_delta') or {}).get('delta', 0):+}) "
+            f"| {_render_value_delta_cell(a.get('value_delta'))} |"
+            for a in existing
+        )
+        sections.append(
+            "\n| Artifact | Materialization | Schema delta | Row-count delta | Value delta |\n"
+            "|----------|-----------------|--------------|-----------------|-------------|\n"
+            + rows
+            + "\n"
+        )
+
+        schema_details = []
+        for a in existing:
+            sd = a.get("schema_delta") or {}
+            if not _has_schema_diff(sd):
+                continue
+            lines = []
+            for col in sd.get("added") or []:
+                lines.append(f"- `{col}` added")
+            for col in sd.get("removed") or []:
+                lines.append(f"- `{col}` removed")
+            for item in sd.get("renamed") or []:
+                if isinstance(item, dict):
+                    lines.append(f"- `{item.get('from', '?')}` renamed → `{item.get('to', '?')}`")
+                else:
+                    lines.append(f"- `{item}` renamed")
+            for item in sd.get("type_changed") or []:
+                lines.append(
+                    f"- `{item['column']}` type: `{item['prod_dtype']}` → `{item['ci_dtype']}`"
+                )
+            for item in sd.get("nullability_flipped") or []:
+                lines.append(
+                    f"- `{item['column']}` nullability: `{item['prod_nullable']}` → `{item['ci_nullable']}`"
+                )
+            if lines:
+                schema_details.append(f"**`{a['name']}`**\n" + "\n".join(lines))
+
+        if schema_details:
+            sections.append(
+                "\n<details>\n<summary>Schema delta details</summary>\n\n"
+                + "\n\n".join(schema_details)
+                + "\n\n</details>\n"
+            )
+
+    return "\n".join(sections)
+
+
 # ─── detail-column helpers (used in summary table) ───────────────────────────
 
 def _detail_ruff(report) -> str:
@@ -564,6 +663,44 @@ def _collapsible_schema_gate(report: dict | None) -> str:
     )
 
 
+def _has_schema_diff(schema_delta: dict) -> bool:
+    return any(
+        schema_delta.get(k)
+        for k in ("added", "removed", "renamed", "type_changed", "nullability_flipped")
+    )
+
+
+def _render_schema_delta_cell(schema_delta: dict) -> str:
+    parts = []
+    added = schema_delta.get("added") or []
+    removed = schema_delta.get("removed") or []
+    renamed = schema_delta.get("renamed") or []
+    type_changed = schema_delta.get("type_changed") or []
+    nullability_flipped = schema_delta.get("nullability_flipped") or []
+    if added:
+        parts.append(f"+{len(added)} col(s)")
+    if removed:
+        parts.append(f"-{len(removed)} col(s)")
+    if renamed:
+        parts.append(f"{len(renamed)} rename(s)")
+    if type_changed:
+        parts.append(f"{len(type_changed)} type change(s)")
+    if nullability_flipped:
+        parts.append(f"{len(nullability_flipped)} nullability change(s)")
+    return ", ".join(parts) if parts else "—"
+
+
+def _render_value_delta_cell(value_delta: dict | None) -> str:
+    if value_delta is None:
+        return "N/A"
+    if value_delta.get("skipped_no_unique_key"):
+        return "⚠️ skipped (no `unique_key`)"
+    rows = value_delta.get("rows_with_diffs", 0)
+    if rows == 0:
+        return "—"
+    return f"{rows} row(s) differ"
+
+
 # ─── public composers ────────────────────────────────────────────────────────
 
 def render_workspace_comment(
@@ -603,11 +740,13 @@ def render_workspace_comment(
 {seeding_section}"""
 
 
-GATE_0_MARKER = "<!-- ci-gate-0 -->"
-GATE_1_MARKER = "<!-- ci-gate-1 -->"
-GATE_2_MARKER = "<!-- ci-gate-2 -->"
-GATE_3_MARKER = "<!-- ci-gate-3 -->"
-GATE_4_MARKER = "<!-- ci-gate-4 -->"
+GATE_0_MARKER = "<!-- ci-static-check -->"
+GATE_1_MARKER = "<!-- ci-state-modified+ -->"
+GATE_2_MARKER = "<!-- ci-run -->"
+GATE_3_MARKER = "<!-- ci-unit-tests -->"
+GATE_4_MARKER = "<!-- ci-data-tests -->"
+GATE_5_MARKER = "<!-- ci-data-diff -->"
+PREFLIGHT_MARKER = "<!-- ci-preflight -->"
 
 
 def render_gate_0_comment(
@@ -701,6 +840,80 @@ def render_gate_4_comment(result) -> str:
         )
     section = render_gate_4(result)
     return f"{GATE_4_MARKER}\n{section}"
+
+
+def render_gate_5_comment(result) -> str:
+    if not result:
+        return (
+            f"{GATE_5_MARKER}\n"
+            "## Gate 5 — Data-Diff vs Prod ⏭️ Skipped\n\n"
+            "Gate 2 (Isolated Build) did not succeed — data-diff requires built rows to compare against.\n\n"
+            "Fix the Gate 2 failure and re-push to trigger Gate 5.\n"
+        )
+    section = render_gate_5(result)
+    return f"{GATE_5_MARKER}\n{section}"
+
+
+def _preflight_row_icon(status: str) -> str:
+    return {
+        "pass": "✅",
+        "ok": "✅",
+        "fail": "❌",
+        "skipped": "⏭️",
+        "behind": "⚠️",
+    }.get(status, "⚠️")
+
+
+def render_preflight_comment(result: dict | None) -> str:
+    """Render the <!-- ci-preflight --> upserted PR comment section.
+
+    Three rows: auto-rebase (informational), intent, ci-config.
+    ci-config shows skipped when intent failed.
+    """
+    if not result:
+        return f"{PREFLIGHT_MARKER}\n## `ci/preflight` ⚠️\n\n_No data available._\n"
+
+    overall = result.get("overall_status", "fail")
+    heading_icon = "✅" if overall == "pass" else "❌"
+
+    rows = []
+
+    ar = result.get("auto_rebase", {})
+    ar_icon = _preflight_row_icon(ar.get("status", "ok"))
+    rows.append(f"| auto-rebase | {ar_icon} | {ar.get('message', '')} |")
+
+    intent = result.get("intent", {})
+    intent_icon = _preflight_row_icon(intent.get("status", "fail"))
+    rows.append(f"| intent | {intent_icon} | {intent.get('message', '')} |")
+
+    ci = result.get("ci_config", {})
+    ci_status = ci.get("status", "fail")
+    ci_icon = _preflight_row_icon(ci_status)
+
+    if ci_status == "skipped":
+        ci_detail = f"⏭ skipped — {ci.get('message', 'previous step failed')}"
+    else:
+        ci_detail = ci.get("message", "")
+        if ci.get("line_number"):
+            ci_detail = f"{ci_detail} (line {ci['line_number']})"
+        missing = ci.get("missing_keys") or []
+        if missing:
+            formatted = ", ".join(f"`{k}`" for k in missing)
+            ci_detail = f"{ci_detail} — missing: {formatted}"
+
+    rows.append(f"| ci-config | {ci_icon} | {ci_detail} |")
+
+    table = (
+        "| Step | Status | Detail |\n"
+        "|------|--------|--------|\n"
+        + "\n".join(rows)
+    )
+
+    return (
+        f"{PREFLIGHT_MARKER}\n"
+        f"## `ci/preflight` {heading_icon}\n\n"
+        f"{table}\n"
+    )
 
 
 def render_details_comment(bundle: ReportBundle) -> str:

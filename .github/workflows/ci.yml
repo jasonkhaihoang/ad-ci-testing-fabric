@@ -18,10 +18,10 @@ on:
     branches: [main]
 
 permissions:
-  contents: write   # required for auto-rebase force-push
+  contents: read
   pull-requests: write
   id-token: write   # required for GitHub OIDC → Azure login
-  statuses: write   # required for ci/gate-N commit status posting
+  statuses: write   # required for intent-based commit status posting
   actions: read     # required for gh run list / gh run download (artifact mode)
 
 env:
@@ -33,17 +33,18 @@ jobs:
   # Auto-rebases branch onto main if behind, then parses ci-config.yml.
   # Uses KV UAMI to fetch App credentials for the force-push token; no Fabric UAMI needed.
   preflight:
-    name: "preflight: parse config & auto-rebase"
+    name: "ci/preflight: intent + config"
     if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     outputs:
-      domain: ${{ steps.config.outputs.domain }}
-      prod_workspace_id: ${{ steps.config.outputs.prod_workspace_id }}
-      prod_workspace_name: ${{ steps.config.outputs.prod_workspace_name }}
-      prod_lakehouse_id: ${{ steps.config.outputs.prod_lakehouse_id }}
-      prod_lakehouse_name: ${{ steps.config.outputs.prod_lakehouse_name }}
-      prod_schema: ${{ steps.config.outputs.prod_schema }}
-      ci_target: ${{ steps.config.outputs.ci_target }}
+      domain: ${{ steps.preflight.outputs.domain }}
+      prod_workspace_id: ${{ steps.preflight.outputs.prod_workspace_id }}
+      prod_workspace_name: ${{ steps.preflight.outputs.prod_workspace_name }}
+      prod_lakehouse_id: ${{ steps.preflight.outputs.prod_lakehouse_id }}
+      prod_lakehouse_name: ${{ steps.preflight.outputs.prod_lakehouse_name }}
+      prod_schema: ${{ steps.preflight.outputs.prod_schema }}
+      ci_target: ${{ steps.preflight.outputs.ci_target }}
+      intent_slug: ${{ steps.preflight.outputs.intent_slug }}
       ephemeral_name: ${{ steps.names.outputs.ephemeral_name }}
     steps:
       - uses: actions/checkout@v4
@@ -51,109 +52,45 @@ jobs:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
 
-      - name: Login — KV UAMI (App credentials for auto-rebase)
-        uses: azure/login@v2
+      - uses: actions/setup-python@v5
         with:
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_KV_CLIENT_ID }}
-          allow-no-subscriptions: true
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Fetch App credentials from Key Vault
-        env:
-          AZURE_KEYVAULT_URL: ${{ vars.AZURE_KEYVAULT_URL }}
-          GH_APP_ID_KV_NAME: ${{ vars.GH_APP_ID_KV_NAME }}
-          GH_APP_PEM_KV_NAME: ${{ vars.GH_APP_PEM_KV_NAME }}
-        run: python3 ${{ env.SCRIPTS }}/kv_utils.py fetch-app-token-creds
+      - run: pip install pyyaml --quiet
 
-      - name: Generate App token for auto-rebase push
-        id: app-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ env.GH_APP_ID_VALUE }}
-          private-key: ${{ env.GH_APP_PEM_VALUE }}
-
-      - name: Auto-rebase onto main (or fail with conflict list)
+      - name: Emit ci/preflight pending
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          python3 ${{ env.SCRIPTS }}/emit_status.py \
+            --context "ci/preflight" \
+            --state pending \
+            --description "Preflight: validating intent + config" \
+            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
+      - name: Check branch sync
+        id: sync
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
           BEHIND=$(gh api \
-            repos/${{ github.repository }}/compare/main...${{ github.event.pull_request.head.sha }} \
-            --jq '.behind_by')
+            "repos/${{ github.repository }}/compare/main...${{ github.event.pull_request.head.sha }}" \
+            --jq '.behind_by' 2>/dev/null || echo "0")
+          echo "behind_by=${BEHIND}" >> "$GITHUB_OUTPUT"
 
-          if [ "$BEHIND" -eq 0 ]; then
-            echo "Branch is up to date with main."
-            exit 0
-          fi
-
-          echo "Branch is ${BEHIND} commit(s) behind main — attempting auto-rebase..."
-          git fetch origin main
-
-          if git rebase origin/main; then
-            echo "Auto-rebase succeeded. Force-pushing rebased branch via App token..."
-            git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git"
-            git push --force-with-lease origin "HEAD:${{ github.head_ref }}"
-            echo "Auto-rebase complete. CI continues with rebased code."
-          else
-            CONFLICT_FILES=$(git diff --name-only --diff-filter=U | head -20)
-            git rebase --abort
-
-            COMMENT_FILE=$(mktemp --suffix=.md)
-            {
-              printf '## ⚠️ Auto-Rebase Failed — Manual Rebase Required\n\n'
-              printf 'This branch is **%s commit(s) behind `main`** and the auto-rebase produced conflicts that cannot be resolved automatically.\n\n' "$BEHIND"
-              printf '**Conflicting files:**\n'
-              echo "$CONFLICT_FILES" | while IFS= read -r f; do printf '- `%s`\n' "$f"; done
-              printf '\nPlease resolve the conflicts locally and re-push:\n\n'
-              printf '```bash\n'
-              printf 'git fetch origin\n'
-              printf 'git rebase origin/main\n'
-              printf '# resolve conflicts in the files listed above, then:\n'
-              printf 'git add <resolved-files>\n'
-              printf 'git rebase --continue\n'
-              printf 'git push --force-with-lease\n'
-              printf '```\n'
-            } > "$COMMENT_FILE"
-
-            gh pr comment "${{ github.event.pull_request.number }}" \
-              --repo "${{ github.repository }}" \
-              --body-file "$COMMENT_FILE"
-            rm "$COMMENT_FILE"
-
-            echo "::error::Auto-rebase failed — conflicts detected. See PR comment for the list of conflicting files."
-            exit 1
-          fi
-
-      - name: Parse ci-config.yml
-        id: config
+      - name: Run preflight checks
+        id: preflight
         run: |
-          python3 - <<'EOF'
-          import yaml, os, sys
-
-          config_path = "ci-config.yml"
-          if not os.path.exists(config_path):
-              print("::error::ci-config.yml not found in repo root.", file=sys.stderr)
-              sys.exit(1)
-
-          with open(config_path) as f:
-              c = yaml.safe_load(f)
-
-          required = ["domain", "prod_workspace_id", "prod_workspace_name",
-                      "prod_lakehouse_id", "prod_lakehouse_name", "prod_schema"]
-          missing = [k for k in required if k not in c]
-          if missing:
-              print(f"::error::ci-config.yml is missing required keys: {missing}", file=sys.stderr)
-              sys.exit(1)
-
-          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              for k, v in c.items():
-                  out.write(f"{k}={v}\n")
-
-          print(f"Config loaded: domain={c['domain']}")
-          EOF
+          mkdir -p reports
+          python3 ${{ env.SCRIPTS }}/preflight.py \
+            --branch-name "${{ github.head_ref }}" \
+            --behind-by "${{ steps.sync.outputs.behind_by || '0' }}" \
+            --ci-config-path "ci-config.yml" \
+            --output reports/preflight.json \
+            --github-output "$GITHUB_OUTPUT"
 
       - name: Compute ephemeral workspace name
         id: names
@@ -162,6 +99,52 @@ jobs:
           NAME="vibedata_ephemeral_${REPO}_${{ github.event.pull_request.number }}"
           echo "ephemeral_name=${NAME}" >> "$GITHUB_OUTPUT"
           echo "Ephemeral workspace name: ${NAME}"
+
+      - name: Post preflight comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys
+          sys.path.insert(0, ".github/scripts")
+          import notify_render, pr_comment
+          try:
+              with open("reports/preflight.json") as f:
+                  result = json.load(f)
+          except (OSError, json.JSONDecodeError):
+              result = None
+          body = notify_render.render_preflight_comment(result)
+          pr_comment.upsert("<!-- ci-preflight -->", body, os.environ["PR_NUMBER"], os.environ["GITHUB_REPOSITORY"])
+          EOF
+
+      - name: Emit ci/preflight success
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 ${{ env.SCRIPTS }}/emit_status.py \
+            --context "ci/preflight" \
+            --state success \
+            --description "Preflight passed" \
+            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Emit ci/preflight failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 ${{ env.SCRIPTS }}/emit_status.py \
+            --context "ci/preflight" \
+            --state failure \
+            --description "Preflight failed — see PR comment" \
+            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   # ─── FETCH PROD STATE ────────────────────────────────────────────────────────
   # Downloads prod-state/manifest.json for Slim CI deferral.
@@ -189,7 +172,7 @@ jobs:
           GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           python3 ${{ env.SCRIPTS }}/emit_status.py \
-            --context "ci/gate-1" \
+            --context "ci/state-modified+" \
             --state pending \
             --description "Gate 1: fetching prod state" \
             --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -249,7 +232,7 @@ jobs:
             DESC="Gate 1: failed — see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           fi
           python3 ${{ env.SCRIPTS }}/emit_status.py \
-            --context "ci/gate-1" \
+            --context "ci/state-modified+" \
             --state "$STATE" \
             --description "$DESC" \
             --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -269,7 +252,7 @@ jobs:
           import notify_render, pr_comment
           greenfield = os.environ.get("GREENFIELD_FALLBACK", "false").lower() == "true"
           body = notify_render.render_gate_1_comment(greenfield)
-          pr_comment.upsert("<!-- ci-gate-1 -->", body, os.environ["PR_NUMBER"], os.environ["REPO"])
+          pr_comment.upsert("<!-- ci-state-modified+ -->", body, os.environ["PR_NUMBER"], os.environ["REPO"])
           EOF
 
   # ─── PROVISION ────────────────────────────────────────────────────────────
@@ -430,7 +413,7 @@ jobs:
 
   # ─── STATIC ANALYSIS ──────────────────────────────────────────────────────
   # Gate 0: linting + dbt compile + build --empty + diff-scoped schema gate.
-  # Posts ci/gate-0 commit status; either blocking step failing marks Gate 0 failed.
+  # Posts ci/static-check commit status; either blocking step failing marks Gate 0 failed.
   static-analysis:
     name: "gate 0: static analysis"
     needs: [preflight]
@@ -457,7 +440,7 @@ jobs:
           GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           python3 ${{ env.SCRIPTS }}/emit_status.py \
-            --context "ci/gate-0" \
+            --context "ci/static-check" \
             --state pending \
             --description "Gate 0: static analysis running" \
             --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -567,7 +550,7 @@ jobs:
               scorecard=scorecard, shortcut_seeding=shortcut_seeding,
           )
           pr_comment.upsert(
-              marker="<!-- ci-gate-0 -->",
+              marker="<!-- ci-static-check -->",
               body=body,
               pr_number=os.environ["PR_NUMBER"],
               repo=os.environ["GITHUB_REPOSITORY"],
@@ -654,7 +637,7 @@ jobs:
             DESC="Gate 0: one or more checks failed"
           fi
           python3 ${{ env.SCRIPTS }}/emit_status.py \
-            --context "ci/gate-0" \
+            --context "ci/static-check" \
             --state "$STATE" \
             --description "$DESC" \
             --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -751,14 +734,14 @@ jobs:
             DESC="Gate 3: unit tests failed — see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           fi
           python3 ${{ env.SCRIPTS }}/emit_status.py \
-            --context "ci/gate-3" \
+            --context "ci/unit-tests" \
             --state "$STATE" \
             --description "$DESC" \
             --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   # ─── GATE 2 — WRITE ───────────────────────────────────────────────────────
   # Triggers the injected notebook via Fabric Item Jobs API, polls until
-  # terminal, downloads gate-2.json, emits ci/gate-2 commit status.
+  # terminal, downloads gate-2.json, emits ci/run commit status.
   gate-2-write:
     name: "gate 2: isolated build"
     needs: [preflight, provision, fetch-prod-state]
@@ -816,12 +799,12 @@ jobs:
           except (OSError, json.JSONDecodeError):
               result = None
           body = notify_render.render_gate_2_comment(result)
-          pr_comment.upsert("<!-- ci-gate-2 -->", body, os.environ["PR_NUMBER"], os.environ["GITHUB_REPOSITORY"])
+          pr_comment.upsert("<!-- ci-run -->", body, os.environ["PR_NUMBER"], os.environ["GITHUB_REPOSITORY"])
           EOF
 
   # ─── GATE 4 — DATA TESTS ─────────────────────────────────────────────────
   # Triggers dbt test --store-failures via Fabric Item Jobs API after Gate 2.
-  # Skipped (no ci/gate-4 status emitted) when Gate 2 fails.
+  # Skipped (no ci/data-tests status emitted) when Gate 2 fails.
   gate-4-data-test:
     name: "gate 4: data tests"
     needs: [provision, gate-2-write]
@@ -881,7 +864,72 @@ jobs:
           except (OSError, json.JSONDecodeError):
               result = None
           body = notify_render.render_gate_4_comment(result)
-          pr_comment.upsert("<!-- ci-gate-4 -->", body, os.environ["PR_NUMBER"], os.environ["GITHUB_REPOSITORY"])
+          pr_comment.upsert("<!-- ci-data-tests -->", body, os.environ["PR_NUMBER"], os.environ["GITHUB_REPOSITORY"])
+          EOF
+
+  # ─── GATE 5 — DATA-DIFF ─────────────────────────────────────────────────────
+  # Triggers data-diff vs prod via Fabric Item Jobs API after Gate 2.
+  # Skipped (no ci/data-diff status emitted) when Gate 2 fails.
+  gate-5-data-diff:
+    name: "gate 5: data-diff"
+    needs: [provision, gate-2-write]
+    if: always() && github.event.action != 'closed'
+    timeout-minutes: 12
+    concurrency:
+      group: pr-${{ github.event.pull_request.number }}-gate-5
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: pip install pyyaml --quiet
+
+      - name: Login — Fabric UAMI
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Run Gate 5
+        if: needs.gate-2-write.result == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          python3 ${{ env.SCRIPTS }}/gate_runner.py run-gate \
+            --gate 5 \
+            --workspace-id "${{ needs.provision.outputs.ephemeral_workspace_id }}" \
+            --lakehouse-id "${{ needs.provision.outputs.ephemeral_lakehouse_id }}" \
+            --notebook-id "${{ needs.provision.outputs.notebook_id }}" \
+            --head-sha "${{ github.event.pull_request.head.sha }}" \
+            --output reports/gate-5.json
+
+      - name: Post gate-5 comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys
+          sys.path.insert(0, ".github/scripts")
+          import notify_render, pr_comment
+          try:
+              with open("reports/gate-5.json") as f:
+                  result = json.load(f)
+          except (OSError, json.JSONDecodeError):
+              result = None
+          body = notify_render.render_gate_5_comment(result)
+          pr_comment.upsert("<!-- ci-data-diff -->", body, os.environ["PR_NUMBER"], os.environ["GITHUB_REPOSITORY"])
           EOF
 
   # ─── TEARDOWN ─────────────────────────────────────────────────────────────

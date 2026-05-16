@@ -38,6 +38,15 @@ POLL_TERMINAL_STATES = {"Completed", "Failed", "Cancelled", "Deduped"}
 POLL_INTERVAL_S = 15
 POLL_TIMEOUT_S = 600  # 10 minutes
 
+_GATE_CONTEXTS = {
+    0: "ci/static-check",
+    1: "ci/state-modified+",
+    2: "ci/run",
+    3: "ci/unit-tests",
+    4: "ci/data-tests",
+    5: "ci/data-diff",
+}
+
 
 # ── Pure core ──────────────────────────────────────────────────────────────────
 
@@ -236,7 +245,7 @@ def cmd_run_gate(args):
     gh_token = os.environ.get("GH_TOKEN", "")
     run_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com") + f"/{repo}/actions/runs/" + os.environ.get("GITHUB_RUN_ID", "")
 
-    context = f"ci/gate-{gate}"
+    context = _GATE_CONTEXTS[int(gate)]
 
     # Emit pending
     if repo and gh_token:
@@ -290,6 +299,10 @@ def cmd_run_gate(args):
         overall_status = result.get("overall_status", "fail")
         item_count = result.get("total", 0)
         item_label = "unit test(s)"
+    elif gate == "5":
+        overall_status = result.get("overall_status", "fail")
+        item_count = len(result.get("artifacts") or [])
+        item_label = "artifact(s)"
     else:
         overall_status, models = parse_gate_result(result)
         item_count = len(models)

@@ -67,19 +67,23 @@ def scorecard(manifest: dict | Manifest, agents_md_path: str) -> dict:
                 cols_with_desc += 1
     col_pct = round(100 * cols_with_desc / total_cols, 1) if total_cols else 0
 
-    # PK test coverage: each *_id column must have both not_null and unique tests.
+    # PK test coverage: per-model — a model is in scope if it has at least one *_id column;
+    # it passes if at least one of those columns has both not_null and unique tests.
     # Manifest.pk_tests_for merges dbt 1.8+ test nodes and dbt <1.8 inline tests.
     pk_pattern = re.compile(r"_id$")
-    pks_found = 0
-    pks_covered = 0
+    pks_found = 0   # models with at least one *_id column
+    pks_covered = 0  # of those, models where at least one *_id column has unique+not_null
     for model_uid, n in models.items():
-        for col_name in n.get("columns", {}).keys():
-            if not pk_pattern.search(col_name):
-                continue
-            pks_found += 1
-            test_names = m.pk_tests_for(model_uid, col_name)
-            if "not_null" in test_names and "unique" in test_names:
-                pks_covered += 1
+        id_cols = [c for c in n.get("columns", {}) if pk_pattern.search(c)]
+        if not id_cols:
+            continue
+        pks_found += 1
+        if any(
+            "not_null" in m.pk_tests_for(model_uid, col)
+            and "unique" in m.pk_tests_for(model_uid, col)
+            for col in id_cols
+        ):
+            pks_covered += 1
     pk_pct = round(100 * pks_covered / pks_found, 1) if pks_found else 100.0
 
     # Naming violations

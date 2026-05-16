@@ -5,7 +5,7 @@ Posts a commit status to the GitHub Statuses API via gh CLI.
 Reads GITHUB_REPOSITORY and GITHUB_SHA from environment.
 
 Usage:
-    emit_status.py --context ci/gate-0 --state pending \
+    emit_status.py --context ci/static-check --state pending \
         --description "Running..." --target-url URL
 """
 
