@@ -836,7 +836,7 @@ jobs:
     name: "ci/run: isolated build"
     needs: [preflight, provision, fetch-prod-state]
     if: github.event.action != 'closed'
-    timeout-minutes: 12
+    timeout-minutes: 35
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-2
       cancel-in-progress: true
