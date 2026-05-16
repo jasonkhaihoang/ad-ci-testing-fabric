@@ -9,6 +9,8 @@ on:
   schedule:
     - cron: "0 2 * * *"
   workflow_dispatch:
+  pull_request:
+    types: [closed]
 
 env:
   PYTHON_VERSION: "3.11"
@@ -40,4 +42,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python3 .github/scripts/fabric_api.py cleanup --repo "$GITHUB_REPOSITORY"
+        run: |
+          EXTRA=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            EXTRA="--pr-number ${{ github.event.pull_request.number }}"
+          fi
+          python3 .github/scripts/fabric_api.py cleanup --repo "$GITHUB_REPOSITORY" $EXTRA
+
+      - name: Upload audit log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workspace-cleanup-audit-${{ github.run_id }}
+          path: workspace-cleanup-audit.json
+          if-no-files-found: warn

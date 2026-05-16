@@ -1021,30 +1021,3 @@ jobs:
           body = notify_render.render_gate_5_comment(result)
           pr_comment.upsert("<!-- ci-data-diff -->", body, os.environ["PR_NUMBER"], os.environ["GITHUB_REPOSITORY"])
           EOF
-
-  # ─── TEARDOWN ─────────────────────────────────────────────────────────────
-  # Deletes the ephemeral workspace when PR is closed or merged.
-  # Fabric UAMI only — no KV access needed for teardown.
-  teardown:
-    name: "teardown: delete workspace"
-    if: github.event.action == 'closed'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Login — Fabric UAMI
-        uses: azure/login@v2
-        with:
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
-          allow-no-subscriptions: true
-
-      - name: Delete ephemeral workspace
-        run: |
-          REPO=$(echo "${{ github.event.repository.name }}" | tr '-' '_')
-          EPHEMERAL_NAME="vibedata_ephemeral_${REPO}_${{ github.event.pull_request.number }}"
-          python3 ${{ env.SCRIPTS }}/fabric_api.py teardown --name "$EPHEMERAL_NAME"
