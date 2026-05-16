@@ -703,14 +703,56 @@ def _render_value_delta_cell(value_delta: dict | None) -> str:
 
 # ─── public composers ────────────────────────────────────────────────────────
 
+_PROVISION_STEP_LABELS: list[tuple[str, str]] = [
+    ("provision", "Provision workspace/lakehouse"),
+    ("create-environment", "Create Fabric Environment"),
+    ("publish-environment", "Publish Fabric Environment"),
+    ("set-workspace-default", "Set workspace default environment"),
+    ("upload-prod-state", "Upload prod-state to OneLake"),
+    ("derive-shortcuts", "Derive shortcuts"),
+    ("seed-shortcuts", "Seed shortcuts"),
+    ("generate-notebook", "Generate and deploy notebook"),
+]
+
+
+def _step_outcome_icon(outcome: str) -> str:
+    return {
+        "success": "✅",
+        "failure": "❌",
+        "skipped": "⏭ skipped",
+        "cancelled": "🚫 cancelled",
+    }.get(outcome, "⏳")
+
+
+def _render_provision_steps_table(provision_steps: dict[str, str]) -> str:
+    rows = "\n".join(
+        f"| {label} | {_step_outcome_icon(provision_steps.get(key, ''))} |"
+        for key, label in _PROVISION_STEP_LABELS
+    )
+    return f"| Step | Result |\n|---|---|\n{rows}"
+
+
 def render_workspace_comment(
     workspace_id: str,
     workspace_name: str,
     head_branch: str,
     greenfield_fallback: bool = False,
     shortcut_seeding: dict | None = None,
+    *,
+    provision_failed: bool = False,
+    provision_steps: dict[str, str] | None = None,
 ) -> str:
     ws_url = FABRIC_WORKSPACE_URL.format(workspace_id=workspace_id)
+    if provision_failed:
+        table = _render_provision_steps_table(provision_steps or {})
+        return (
+            f"{COMMENT_MARKER}\n"
+            f"## ⚠️ Provision Failed\n\n"
+            f"**Workspace:** [{workspace_name}]({ws_url})  "
+            f"**Branch:** `{head_branch}`\n\n"
+            f"{table}\n\n"
+            f"> Gates 2–5 will not run. Fix the failing step and push again."
+        )
     greenfield_notice = ""
     if greenfield_fallback:
         greenfield_notice = (

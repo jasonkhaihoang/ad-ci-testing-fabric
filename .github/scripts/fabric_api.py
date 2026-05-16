@@ -510,19 +510,38 @@ def create_environment(workspace_id: str, config_path: str) -> str:
         env_id = resp["id"]
         print(f"Created environment '{env_name}' ({env_id})", flush=True)
 
-    # Configure spark compute if specified
+    # Configure spark compute if specified.
+    # Skip when already published — re-PATCHing staging on a published environment
+    # triggers full pool-size validation and fails on constrained capacities (e.g. F2).
+    # Settings are stable once published; they only change on a bundle upgrade,
+    # which always arrives on a fresh workspace (supersession or new PR).
     spark_pool = config.get("spark_pool", {})
     if spark_pool:
-        sparkcompute_body = {
-            "nodeSize": spark_pool.get("node_size", "Small"),
-            "autoscale": spark_pool.get("auto_scale", {}),
-        }
-        fabric_transport.request(
-            "PATCH",
-            f"/workspaces/{workspace_id}/environments/{env_id}/staging/sparkcompute",
-            {**sparkcompute_body, "runtimeVersion": runtime_version},
+        env_detail = fabric_transport.request(
+            "GET", f"/workspaces/{workspace_id}/environments/{env_id}"
         )
-        print(f"Configured spark compute: {sparkcompute_body}", flush=True)
+        publish_state = (
+            env_detail.get("properties", {})
+            .get("publishDetails", {})
+            .get("state", "")
+        )
+        if publish_state == "Success":
+            print(
+                f"Environment already published (state: {publish_state}) — "
+                "skipping sparkcompute reconfigure.",
+                flush=True,
+            )
+        else:
+            sparkcompute_body = {
+                "nodeSize": spark_pool.get("node_size", "Small"),
+                "autoscale": spark_pool.get("auto_scale", {}),
+            }
+            fabric_transport.request(
+                "PATCH",
+                f"/workspaces/{workspace_id}/environments/{env_id}/staging/sparkcompute",
+                {**sparkcompute_body, "runtimeVersion": runtime_version},
+            )
+            print(f"Configured spark compute: {sparkcompute_body}", flush=True)
 
     # Upload pip packages to staging/libraries — API requires multipart/form-data environment.yml
     pip_packages = config.get("pip_packages", [])

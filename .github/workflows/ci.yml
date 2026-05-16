@@ -357,6 +357,18 @@ jobs:
           client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
           allow-no-subscriptions: true
 
+      - name: Emit ci/provision pending
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 ${{ env.SCRIPTS }}/emit_status.py \
+            --context "ci/provision" \
+            --state pending \
+            --description "Provision: workspace, environment, shortcuts, notebook" \
+            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
       - name: Cancel in-flight jobs
         env:
           EPHEMERAL_NAME: ${{ needs.preflight.outputs.ephemeral_name }}
@@ -383,6 +395,7 @@ jobs:
             --environment-id "${{ steps.create-environment.outputs.environment_id }}"
 
       - name: Set Environment as workspace default
+        id: set-workspace-default
         run: |
           python3 ${{ env.SCRIPTS }}/fabric_api.py set-workspace-default-environment \
             --workspace-id "${{ steps.provision.outputs.workspace_id }}" \
@@ -425,6 +438,7 @@ jobs:
           dbt parse --profiles-dir .github/profiles --target dbt_fabric_compile --quiet
 
       - name: Derive shortcuts from manifest
+        id: derive-shortcuts
         env:
           PROD_WORKSPACE_ID: ${{ needs.preflight.outputs.prod_workspace_id }}
           PROD_LAKEHOUSE_ID: ${{ needs.preflight.outputs.prod_lakehouse_id }}
@@ -433,6 +447,7 @@ jobs:
           python3 ${{ env.SCRIPTS }}/derive_shortcuts.py --output shortcuts.json
 
       - name: Seed shortcuts in ephemeral lakehouse
+        id: seed-shortcuts
         run: |
           python3 ${{ env.SCRIPTS }}/fabric_api.py seed-shortcuts \
             --from-file shortcuts.json \
@@ -491,6 +506,7 @@ jobs:
 
       - name: Post workspace comment
         if: always()
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EPHEMERAL_WORKSPACE_ID: ${{ steps.provision.outputs.workspace_id }}
@@ -499,7 +515,37 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           GREENFIELD_FALLBACK: ${{ needs.fetch-prod-state.outputs.greenfield_fallback }}
+          PROVISION_OUTCOME: ${{ job.status }}
+          STEP_PROVISION: ${{ steps.provision.outcome }}
+          STEP_CREATE_ENV: ${{ steps.create-environment.outcome }}
+          STEP_PUBLISH_ENV: ${{ steps.publish-environment.outcome }}
+          STEP_SET_DEFAULT: ${{ steps.set-workspace-default.outcome }}
+          STEP_UPLOAD_PROD_STATE: ${{ steps.upload-prod-state.outcome }}
+          STEP_DERIVE_SHORTCUTS: ${{ steps.derive-shortcuts.outcome }}
+          STEP_SEED_SHORTCUTS: ${{ steps.seed-shortcuts.outcome }}
+          STEP_GENERATE_NOTEBOOK: ${{ steps.generate-notebook.outcome }}
         run: python3 ${{ env.SCRIPTS }}/notify.py --workspace-comment-only
+
+      - name: Emit ci/provision final status
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            STATE=success
+            DESC="Provision: workspace ready"
+          else
+            STATE=failure
+            DESC="Provision: failed — see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+          python3 ${{ env.SCRIPTS }}/emit_status.py \
+            --context "ci/provision" \
+            --state "$STATE" \
+            --description "$DESC" \
+            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   # ─── STATIC ANALYSIS ──────────────────────────────────────────────────────
   # Gate 0: linting + dbt compile + build --empty + diff-scoped schema gate.

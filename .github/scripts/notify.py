@@ -189,12 +189,31 @@ def post_workspace_comment_only():
     pr_number = os.environ.get("PR_NUMBER", "")
     repo = os.environ.get("REPO", "")
     greenfield_fallback = os.environ.get("GREENFIELD_FALLBACK", "").lower() == "true"
-    shortcut_seeding = load_report("reports/shortcut_seeding.json")
+    provision_outcome = os.environ.get("PROVISION_OUTCOME", "success")
+    provision_failed = provision_outcome != "success"
+    provision_steps = {
+        "provision": os.environ.get("STEP_PROVISION", ""),
+        "create-environment": os.environ.get("STEP_CREATE_ENV", ""),
+        "publish-environment": os.environ.get("STEP_PUBLISH_ENV", ""),
+        "set-workspace-default": os.environ.get("STEP_SET_DEFAULT", ""),
+        "upload-prod-state": os.environ.get("STEP_UPLOAD_PROD_STATE", ""),
+        "derive-shortcuts": os.environ.get("STEP_DERIVE_SHORTCUTS", ""),
+        "seed-shortcuts": os.environ.get("STEP_SEED_SHORTCUTS", ""),
+        "generate-notebook": os.environ.get("STEP_GENERATE_NOTEBOOK", ""),
+    }
 
-    workspace_comment = build_comment(workspace_id, workspace_name, head_branch, greenfield_fallback)
-    shortcut_section = format_shortcut_seeding(shortcut_seeding)
-    if shortcut_section:
-        workspace_comment = workspace_comment.rstrip("\n") + "\n\n" + shortcut_section
+    workspace_comment = build_comment(
+        workspace_id, workspace_name, head_branch, greenfield_fallback,
+        provision_failed=provision_failed,
+        provision_steps=provision_steps,
+    )
+
+    if not provision_failed:
+        shortcut_seeding = load_report("reports/shortcut_seeding.json")
+        shortcut_section = format_shortcut_seeding(shortcut_seeding)
+        if shortcut_section:
+            workspace_comment = workspace_comment.rstrip("\n") + "\n\n" + shortcut_section
+
     pr_comment.upsert(COMMENT_MARKER, workspace_comment, pr_number, repo)
     print("Workspace PR comment posted.", flush=True)
 
