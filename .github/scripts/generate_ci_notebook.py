@@ -52,6 +52,8 @@ def build_parameters_cell_source(
     ci_run_id: str,
     ci_target: str,
     prod_state_path: str,
+    prod_workspace_name: str = "",
+    prod_lakehouse_name: str = "",
     gate: str = "2",
     schema_name: str = "dbo",
 ) -> list[str]:
@@ -79,6 +81,8 @@ def build_parameters_cell_source(
         f'gate = "{gate}"\n',
         f'ci_run_id = "{ci_run_id}"\n',
         f'head_sha = "{head_sha}"\n',
+        f'prod_workspace_name = "{prod_workspace_name}"\n',
+        f'prod_lakehouse_name = "{prod_lakehouse_name}"\n',
     ]
 
 
@@ -248,6 +252,8 @@ def main(template_path: Path | None = None) -> None:
     prod_state_abfss = os.environ.get("PROD_STATE_ABFSS", "").strip() or "./prod-state"
     if prod_state_abfss.endswith("/manifest.json"):
         prod_state_abfss = prod_state_abfss[: -len("/manifest.json")]
+    prod_workspace_name = os.environ.get("PROD_WORKSPACE_NAME", "").strip()
+    prod_lakehouse_name = os.environ.get("PROD_LAKEHOUSE_NAME", "").strip()
 
     if template_path is None:
         template_path = _BUNDLE_TEMPLATE
@@ -270,6 +276,8 @@ def main(template_path: Path | None = None) -> None:
         ci_run_id=ci_run_id,
         ci_target=ci_target,
         prod_state_path=prod_state_abfss,
+        prod_workspace_name=prod_workspace_name,
+        prod_lakehouse_name=prod_lakehouse_name,
     )
     notebook = inject_parameters_cell(notebook, params_source)
     notebook = patch_lakehouse_metadata(notebook, lakehouse_id, lakehouse_name, workspace_id)

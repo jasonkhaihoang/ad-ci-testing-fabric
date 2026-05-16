@@ -439,6 +439,28 @@ jobs:
             --workspace-id "${{ steps.provision.outputs.workspace_id }}" \
             --lakehouse-id "${{ steps.provision.outputs.lakehouse_id }}"
 
+      - name: Emit deployment manifest
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 ${{ env.SCRIPTS }}/emit_deployment_manifest.py
+
+      - name: Upload deployment manifest to ephemeral OneLake
+        run: |
+          python3 ${{ env.SCRIPTS }}/fabric_api.py upload-file \
+            --workspace-id "${{ steps.provision.outputs.workspace_id }}" \
+            --lakehouse-id "${{ steps.provision.outputs.lakehouse_id }}" \
+            --local-path "reports/deployment-manifest-${{ github.event.pull_request.head.sha }}.json" \
+            --remote-path "Files/ci-artifacts/deployment-manifest-${{ github.event.pull_request.head.sha }}.json"
+
+      - name: Upload deployment manifest GHA artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-manifest-${{ github.event.pull_request.head.sha }}
+          path: reports/deployment-manifest-${{ github.event.pull_request.head.sha }}.json
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Upload shortcut seeding report
         uses: actions/upload-artifact@v4
         if: always()
@@ -463,6 +485,8 @@ jobs:
           GH_APP_PEM_KV_NAME: ${{ vars.GH_APP_PEM_KV_NAME }}
           PROD_STATE_ABFSS: ${{ steps.upload-prod-state.outputs.abfss_path }}
           CI_TARGET: ${{ needs.preflight.outputs.ci_target }}
+          PROD_WORKSPACE_NAME: ${{ needs.preflight.outputs.prod_workspace_name }}
+          PROD_LAKEHOUSE_NAME: ${{ needs.preflight.outputs.prod_lakehouse_name }}
         run: python3 ${{ env.SCRIPTS }}/generate_ci_notebook.py
 
       - name: Post workspace comment
