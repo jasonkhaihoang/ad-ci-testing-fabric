@@ -18,9 +18,11 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.request
+from typing import NamedTuple
 
 import yaml
 
@@ -29,6 +31,29 @@ import runner_io
 
 
 ONELAKE_DFS = "https://onelake.dfs.fabric.microsoft.com"
+
+
+# ─── Artifact-mode result types (VD-1596 Phase 2) ─────────────────────────────
+#
+# Artifact mode distinguishes three outcomes:
+#   - success    : manifest fetched and written to prod-state/
+#   - greenfield : zero successful CD runs on `main` ever — operator should
+#                  expect a full build. Caller invokes fetch_greenfield().
+#   - error      : any other fetch failure. Caller must NOT collapse to
+#                  greenfield; instead exit non-zero with category + reason
+#                  so the PR comment can route the operator to remediation.
+#
+# Categories (artifact mode):
+#   transient — gh CLI non-zero, retryable stderr, network/timeout
+#   config    — missing required key in ci-config.yml
+#   parse     — manifest absent from artifact, or invalid JSON inside it
+# (`auth` is reserved for onelake-mode UAMI failures — see §4.2 of the
+# design doc. Onelake classification is deferred; see fetch_onelake_mode.)
+
+class ArtifactResult(NamedTuple):
+    status: str  # "success" | "greenfield" | "error"
+    category: str | None = None
+    reason: str | None = None
 
 
 # ─── Output helpers ───────────────────────────────────────────────────────────
@@ -47,8 +72,12 @@ def write_source_json(mode: str, source: str, head_sha: str) -> None:
 
 # ─── Fetch modes ──────────────────────────────────────────────────────────────
 
-def fetch_artifact_mode(cfg: dict) -> bool:
-    """Download manifest from the latest successful CD run on main. Returns True on success."""
+def fetch_artifact_mode(cfg: dict) -> ArtifactResult:
+    """Download manifest from the latest successful CD run on main.
+
+    Returns an ArtifactResult — see ArtifactResult docstring for the three
+    possible statuses and category mapping.
+    """
     workflow = cfg.get("workflow", "")
     artifact_name = cfg.get("artifact_name", "prod-manifest")
     main_branch = cfg.get("main_branch", "main")
@@ -56,8 +85,9 @@ def fetch_artifact_mode(cfg: dict) -> bool:
     head_sha = os.environ.get("HEAD_SHA", "")
 
     if not workflow:
-        runner_io.error("prod_manifest_source.workflow is required for artifact mode.")
-        return False
+        reason = "prod_manifest_source.workflow is required for artifact mode."
+        runner_io.error(reason)
+        return ArtifactResult("error", "config", reason)
 
     result = subprocess.run(
         [
@@ -72,17 +102,24 @@ def fetch_artifact_mode(cfg: dict) -> bool:
         capture_output=True, text=True,
     )
     if result.returncode != 0:
-        runner_io.warning(f"gh run list failed: {result.stderr.strip()}")
-        return False
+        reason = f"gh run list failed: {result.stderr.strip() or 'exit ' + str(result.returncode)}"
+        runner_io.warning(reason)
+        return ArtifactResult("error", "transient", reason)
 
     try:
         runs = json.loads(result.stdout)
     except ValueError:
-        runner_io.warning("gh run list returned invalid JSON — falling back to greenfield.")
-        return False
+        reason = "gh run list returned invalid JSON (possible rate-limit or proxy interception)."
+        runner_io.warning(reason)
+        return ArtifactResult("error", "transient", reason)
+
     if not runs:
-        runner_io.warning("No successful CD workflow runs found on main — falling back to greenfield.")
-        return False
+        # The single legitimate greenfield signal: zero successful CD runs ever.
+        runner_io.notice(
+            "No successful CD workflow runs found on main — true greenfield "
+            "(full build)."
+        )
+        return ArtifactResult("greenfield")
 
     run_id = runs[0]["databaseId"]
     run_sha = runs[0]["headSha"]
@@ -98,13 +135,31 @@ def fetch_artifact_mode(cfg: dict) -> bool:
             capture_output=True, text=True,
         )
         if dl_result.returncode != 0:
-            runner_io.warning(f"gh run download failed: {dl_result.stderr.strip()}")
-            return False
+            reason = (
+                f"gh run download failed for run {run_id}: "
+                f"{dl_result.stderr.strip() or 'exit ' + str(dl_result.returncode)}"
+            )
+            runner_io.warning(reason)
+            return ArtifactResult("error", "transient", reason)
 
         manifest_src = os.path.join(tmpdir, "manifest.json")
         if not os.path.exists(manifest_src):
-            runner_io.warning(f"manifest.json not found in artifact '{artifact_name}'.")
-            return False
+            reason = (
+                f"manifest.json not found in artifact '{artifact_name}' "
+                f"(run {run_id})."
+            )
+            runner_io.warning(reason)
+            return ArtifactResult("error", "parse", reason)
+
+        # Validate the manifest is parseable JSON before declaring success —
+        # downstream Slim CI will choke on a malformed file with a worse error.
+        try:
+            with open(manifest_src) as f:
+                json.load(f)
+        except (ValueError, OSError) as e:
+            reason = f"manifest.json in artifact '{artifact_name}' is not valid JSON: {e}"
+            runner_io.warning(reason)
+            return ArtifactResult("error", "parse", reason)
 
         os.makedirs("prod-state", exist_ok=True)
         shutil.copy2(manifest_src, "prod-state/manifest.json")
@@ -115,11 +170,17 @@ def fetch_artifact_mode(cfg: dict) -> bool:
         head_sha=head_sha,
     )
     print(f"Artifact manifest fetched from run {run_id} (SHA {run_sha[:8]}).", flush=True)
-    return True
+    return ArtifactResult("success")
 
 
 def fetch_onelake_mode(cfg: dict) -> bool:
-    """Download manifest from OneLake Files path via Fabric UAMI. Returns True on success."""
+    """Download manifest from OneLake Files path via Fabric UAMI. Returns True on success.
+
+    # TODO(VD-1596 onelake): onelake-mode platform-error classification is
+    # deferred until onelake mode is activated. Until then, any failure here
+    # is treated as a fallback-to-greenfield signal by main() — there is no
+    # `auth | transient | parse` category breakdown for onelake yet.
+    """
     workspace_id = cfg.get("workspace_id", "")
     lakehouse_id = cfg.get("lakehouse_id", "")
     file_path = cfg.get("file_path", "")
@@ -242,35 +303,74 @@ def fetch_greenfield() -> None:
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
-def load_config() -> dict:
+def load_config() -> dict | None:
+    """Return parsed ci-config.yml, or None when the file is absent.
+
+    A wholly missing ci-config.yml means the repo has not been onboarded to
+    Slim CI; callers treat that as greenfield (not a platform error).
+    """
     config_path = "ci-config.yml"
     if not os.path.exists(config_path):
         runner_io.warning("ci-config.yml not found — using greenfield fallback.")
-        return {}
+        return None
     with open(config_path) as f:
         return yaml.safe_load(f) or {}
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
+def _emit_platform_error(mode: str, category: str, reason: str) -> None:
+    """Surface a non-greenfield platform error to the runner + PR comment path.
+
+    Writes structured outputs that `ci.yml`'s "Post gate-1 comment" step picks
+    up and renders via `notify_render.render_gate_1_comment(... platform_error=…)`.
+    Does NOT write `prod-state/source.json` with `mode: greenfield` — by design,
+    a platform error must be distinguishable from a true greenfield run.
+    """
+    runner_io.set_output("greenfield_fallback", "false")
+    runner_io.set_output("mode", mode)
+    runner_io.set_output("category", category)
+    runner_io.set_output("reason", reason)
+    runner_io.error(f"Platform error ({mode}/{category}): {reason}")
+
+
 def main() -> None:
     config = load_config()
+    if config is None:
+        # Repo not onboarded to Slim CI — greenfield without platform-error
+        # noise. Preserves backwards compatibility for un-onboarded repos.
+        fetch_greenfield()
+        runner_io.set_output("greenfield_fallback", "true")
+        print("fetch-prod-state complete.", flush=True)
+        return
+
     manifest_cfg = config.get("prod_manifest_source") or {}
     mode = manifest_cfg.get("mode", "artifact")
 
-    success = False
     if mode == "artifact":
-        success = fetch_artifact_mode(manifest_cfg)
+        result = fetch_artifact_mode(manifest_cfg)
+        if result.status == "success":
+            runner_io.set_output("greenfield_fallback", "false")
+        elif result.status == "greenfield":
+            fetch_greenfield()
+            runner_io.set_output("greenfield_fallback", "true")
+        else:  # error — VD-1596 Phase 2: distinguish from greenfield, exit non-zero
+            _emit_platform_error("artifact", result.category or "transient", result.reason or "")
+            sys.exit(1)
     elif mode == "onelake":
+        # TODO(VD-1596 onelake): no platform-error classification yet — any
+        # failure collapses to greenfield, mirroring the demo behaviour. Lift
+        # this once onelake mode is activated.
         success = fetch_onelake_mode(manifest_cfg)
+        if not success:
+            fetch_greenfield()
+            runner_io.set_output("greenfield_fallback", "true")
+        else:
+            runner_io.set_output("greenfield_fallback", "false")
     else:
         runner_io.warning(f"Unknown prod_manifest_source.mode '{mode}' — using greenfield fallback.")
-
-    if not success:
         fetch_greenfield()
         runner_io.set_output("greenfield_fallback", "true")
-    else:
-        runner_io.set_output("greenfield_fallback", "false")
 
     print("fetch-prod-state complete.", flush=True)
 

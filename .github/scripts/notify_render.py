@@ -870,11 +870,37 @@ def render_gate_0_comment(
 
 
 def render_gate_1_comment(
-    closure: list[dict], *, greenfield: bool, passed: bool
+    closure: list[dict],
+    *,
+    greenfield: bool,
+    passed: bool,
+    platform_error: dict | None = None,
 ) -> str:
-    """Render the ci/state-modified+ PR comment with the model closure table."""
+    """Render the ci/state-modified+ PR comment.
+
+    When `platform_error` is set (VD-1596 Phase 2 artifact-mode failure), the
+    body distinguishes a platform error from greenfield by carrying the
+    Mode / Category / Reason triple plus a remediation footer that tells the
+    operator to re-run the job or push a new commit. `platform_error` keys:
+    `mode`, `category`, `reason`.
+    """
     icon = _icon(passed)
     heading = f"## Gate 1 — Compile-time Logic {icon}"
+
+    if platform_error:
+        mode = platform_error.get("mode", "artifact")
+        category = platform_error.get("category", "")
+        reason = platform_error.get("reason", "")
+        return (
+            f"{GATE_1_MARKER}\n"
+            f"{heading}\n\n"
+            f"> ❌ **Platform error** — fetching prod state failed.\n\n"
+            f"- Mode: {mode}\n"
+            f"- Category: {category}\n"
+            f"- Reason: {reason}\n\n"
+            "Gates 2–5 did not run. Re-run this job once the issue is resolved, "
+            "or push a new commit.\n"
+        )
 
     if not passed and not closure:
         return (

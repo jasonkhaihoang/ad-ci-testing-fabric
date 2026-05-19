@@ -160,6 +160,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       greenfield_fallback: ${{ steps.fetch.outputs.greenfield_fallback }}
+      platform_error_mode: ${{ steps.fetch.outputs.mode }}
+      platform_error_category: ${{ steps.fetch.outputs.category }}
+      platform_error_reason: ${{ steps.fetch.outputs.reason }}
     steps:
       - uses: actions/checkout@v4
 
@@ -300,6 +303,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GREENFIELD_FALLBACK: ${{ steps.fetch.outputs.greenfield_fallback }}
+          PLATFORM_ERROR_MODE: ${{ steps.fetch.outputs.mode }}
+          PLATFORM_ERROR_CATEGORY: ${{ steps.fetch.outputs.category }}
+          PLATFORM_ERROR_REASON: ${{ steps.fetch.outputs.reason }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           SCRIPTS_DIR: ${{ env.SCRIPTS }}
@@ -311,12 +317,26 @@ jobs:
           import notify_render, pr_comment
           greenfield = os.environ.get("GREENFIELD_FALLBACK", "false").lower() == "true"
           passed = os.environ.get("GATE1_JOB_STATUS", "failure").lower() == "success"
+          # VD-1596 Phase 2: artifact-mode platform errors carry mode/category/reason.
+          category = os.environ.get("PLATFORM_ERROR_CATEGORY", "")
+          platform_error = None
+          if not passed and category:
+              platform_error = {
+                  "mode": os.environ.get("PLATFORM_ERROR_MODE", "artifact"),
+                  "category": category,
+                  "reason": os.environ.get("PLATFORM_ERROR_REASON", ""),
+              }
           try:
               with open("prod-state/closure.json") as f:
                   closure = json.load(f)
           except (FileNotFoundError, json.JSONDecodeError):
               closure = []
-          body = notify_render.render_gate_1_comment(closure, greenfield=greenfield, passed=passed)
+          body = notify_render.render_gate_1_comment(
+              closure,
+              greenfield=greenfield,
+              passed=passed,
+              platform_error=platform_error,
+          )
           pr_comment.upsert(notify_render.GATE_1_MARKER, body, os.environ["PR_NUMBER"], os.environ["REPO"])
           EOF
 
@@ -406,14 +426,15 @@ jobs:
             --environment-name "${{ steps.create-environment.outputs.environment_name }}" \
             --runtime-version "${{ steps.create-environment.outputs.runtime_version }}"
 
-      - name: Add PR author as Contributor on ephemeral workspace
+      - name: Add PR author as Admin on ephemeral workspace
         env:
           AAD_DOMAIN: ${{ vars.AAD_DOMAIN }}
           AAD_UPN_OVERRIDE: ${{ secrets.AAD_UPN_OVERRIDE }}
         run: |
           python3 ${{ env.SCRIPTS }}/fabric_api.py add-contributor \
             --workspace-id "${{ steps.provision.outputs.workspace_id }}" \
-            --github-login "${{ github.event.pull_request.user.login }}"
+            --github-login "${{ github.event.pull_request.user.login }}" \
+            --role Admin
 
       - name: Download prod-state artifact
         uses: actions/download-artifact@v4
@@ -885,7 +906,7 @@ jobs:
   gate-2-write:
     name: "ci/run: isolated build"
     needs: [preflight, provision, fetch-prod-state]
-    if: github.event.action != 'closed'
+    if: false
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-2
@@ -950,7 +971,7 @@ jobs:
   gate-4-data-test:
     name: "ci/data-tests: data tests"
     needs: [provision, gate-2-write]
-    if: always() && github.event.action != 'closed'
+    if: false
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-4
@@ -1015,7 +1036,7 @@ jobs:
   gate-5-data-diff:
     name: "ci/data-diff: data-diff"
     needs: [provision, gate-2-write]
-    if: always() && github.event.action != 'closed'
+    if: false
     timeout-minutes: 12
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-5

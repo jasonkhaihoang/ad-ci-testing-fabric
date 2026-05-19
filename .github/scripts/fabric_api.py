@@ -79,27 +79,27 @@ def find_lakehouse_by_name(workspace_id: str, name: str) -> dict | None:
 
 # ─── Admin role helper ───────────────────────────────────────────────────────
 
-def add_workspace_user(workspace_id: str, upn: str):
-    """Add or update a user as Admin on the workspace via the Power BI REST API.
+def add_workspace_user(workspace_id: str, upn: str, role: str = "Admin"):
+    """Add or update a user on the workspace via the Power BI REST API.
 
     Tries PUT first (updates an existing user's role); falls back to POST (adds a
     new user) when PUT returns 404. Both calls are non-blocking: any other error
     logs a warning and allows provisioning to continue.
     """
-    payload = {"emailAddress": upn, "groupUserAccessRight": "Admin"}
+    payload = {"identifier": upn, "groupUserAccessRight": role, "principalType": "User"}
     for method in ("PUT", "POST"):
         try:
             fabric_transport.request(
                 method, f"/groups/{workspace_id}/users", payload, audience="powerbi",
             )
-            print(f"Added '{upn}' as Admin on workspace {workspace_id} (via {method}).", flush=True)
+            print(f"Added '{upn}' as {role} on workspace {workspace_id} (via {method}).", flush=True)
             return
         except urllib.error.HTTPError as e:
             body_text = e.read().decode(errors="replace")
             if method == "PUT" and e.code == 404:
                 continue  # user not yet in workspace — fall through to POST
             print(
-                f"Warning: could not add '{upn}' as Admin via {method} (HTTP {e.code}): {body_text}. "
+                f"Warning: could not add '{upn}' as {role} via {method} (HTTP {e.code}): {body_text}. "
                 "Skipping — provisioning continues.",
                 flush=True,
             )
@@ -294,7 +294,7 @@ def cmd_add_contributor(args):
         upn = f"{args.github_login}@{aad_domain}"
         print(f"Constructed UPN: {upn}", flush=True)
 
-    add_workspace_user(args.workspace_id, upn)
+    add_workspace_user(args.workspace_id, upn, role=args.role)
 
 
 # ─── OneLake Files upload ─────────────────────────────────────────────────────
@@ -642,6 +642,7 @@ def main():
     p = sub.add_parser("add-contributor")
     p.add_argument("--workspace-id", required=True)
     p.add_argument("--github-login", required=True)
+    p.add_argument("--role", choices=["Admin", "Member", "Contributor", "Viewer"], default="Admin")
     p2 = sub.add_parser("upload-file")
     p2.add_argument("--workspace-id", required=True)
     p2.add_argument("--lakehouse-id", required=True)
