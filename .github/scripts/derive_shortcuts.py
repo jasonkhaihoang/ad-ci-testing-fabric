@@ -27,16 +27,16 @@ Env: PROD_WORKSPACE_ID, PROD_LAKEHOUSE_ID.
 import argparse
 import json
 import os
-import subprocess
 import sys
 from typing import List, Optional, Set, Tuple
 
 try:
     from scripts import shortcut_seeding_report
+    from scripts.dbt_ls import run_dbt_ls
 except ImportError:  # invoked as `python3 path/to/derive_shortcuts.py`
     import shortcut_seeding_report
+    from dbt_ls import run_dbt_ls
 
-import runner_io
 from dbt_manifest import Manifest
 
 
@@ -164,41 +164,6 @@ def _is_greenfield() -> bool:
     return src.get("mode") == "greenfield"
 
 
-def _run_dbt_ls() -> List[str]:
-    """Invoke dbt ls and parse the unique_ids of the modified set."""
-    result = subprocess.run(
-        [
-            "dbt", "ls",
-            "--select", "state:modified+",
-            "--resource-type", "model", "snapshot",
-            "--state", "./prod-state",
-            "--output", "json",
-            "--profiles-dir", ".github/profiles",
-            "--target", "dbt_fabric_compile",
-        ],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        runner_io.error(
-            f"dbt ls failed (exit {result.returncode}). "
-            f"stdout/stderr (first 500 chars): "
-            f"{(result.stdout + result.stderr)[:500]}"
-        )
-        return []
-    unique_ids: List[str] = []
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            continue
-        uid = entry.get("unique_id")
-        if uid:
-            unique_ids.append(uid)
-    return unique_ids
-
 
 def _write_report(derived: List[dict], zero_state: Optional[str]) -> None:
     shortcut_seeding_report.set_derivation(derived, zero_state)
@@ -228,7 +193,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         _write_report([], "greenfield")
         return 0
 
-    modified_ids = _run_dbt_ls()
+    modified_ids = run_dbt_ls()
     if not modified_ids:
         _emit_shortcuts([], args.output)
         _write_report([], "no-modified-models")

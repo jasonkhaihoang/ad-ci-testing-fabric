@@ -15,13 +15,11 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
-import sys
 
 try:
-    from scripts import runner_io
+    from scripts.dbt_ls import run_dbt_ls
 except ImportError:
-    import runner_io
+    from dbt_ls import run_dbt_ls
 
 
 def build_deployment_manifest(
@@ -71,42 +69,6 @@ def _is_greenfield() -> bool:
     return src.get("mode") == "greenfield"
 
 
-def _run_dbt_ls() -> list[str]:
-    """Invoke dbt ls --select state:modified+ and return unique_ids."""
-    result = subprocess.run(
-        [
-            "dbt", "ls",
-            "--select", "state:modified+",
-            "--resource-type", "model", "snapshot",
-            "--state", "./prod-state",
-            "--output", "json",
-            "--profiles-dir", ".github/profiles",
-            "--target", "dbt_fabric_compile",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        runner_io.error(
-            f"dbt ls failed (exit {result.returncode}). "
-            f"stdout/stderr (first 500 chars): {(result.stdout + result.stderr)[:500]}"
-        )
-        sys.exit(1)
-    unique_ids: list[str] = []
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            continue
-        uid = entry.get("unique_id")
-        if uid:
-            unique_ids.append(uid)
-    return unique_ids
-
-
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 
@@ -114,7 +76,7 @@ def main() -> None:
     head_sha = os.environ["HEAD_SHA"].strip()
 
     greenfield = _is_greenfield()
-    closure_uids = _run_dbt_ls() if not greenfield else []
+    closure_uids = run_dbt_ls() if not greenfield else []
 
     current_nodes = (_read_json("target/manifest.json") or {}).get("nodes", {})
 

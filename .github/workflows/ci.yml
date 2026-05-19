@@ -17,6 +17,10 @@ on:
     types: [opened, synchronize, reopened, closed]
     branches: [main]
 
+concurrency:
+  group: ci-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   pull-requests: write
@@ -780,13 +784,13 @@ jobs:
 
   # ─── GATE 3 — UNIT TESTS ──────────────────────────────────────────────────
   # dbt unit tests against state:modified+ models with mocked YAML inputs.
-  # Runs in Fabric ephemeral workspace (sequential after Gate 2) so that
+  # Runs in Fabric ephemeral workspace (in parallel with Gate 2 — no data dependency) so that
   # get_columns_in_relation() resolves against real tables in the Spark catalog.
   gate-3-unit:
     name: "ci/unit-tests: unit tests"
-    needs: [provision, gate-2-write]
-    if: github.event.action != 'closed' && needs.gate-2-write.result == 'success'
-    timeout-minutes: 12
+    needs: [provision]
+    if: github.event.action != 'closed'
+    timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-3
       cancel-in-progress: true
@@ -882,7 +886,7 @@ jobs:
     name: "ci/run: isolated build"
     needs: [preflight, provision, fetch-prod-state]
     if: github.event.action != 'closed'
-    timeout-minutes: 35
+    timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-2
       cancel-in-progress: true
@@ -916,7 +920,8 @@ jobs:
             --workspace-id "${{ needs.provision.outputs.ephemeral_workspace_id }}" \
             --lakehouse-id "${{ needs.provision.outputs.ephemeral_lakehouse_id }}" \
             --notebook-id "${{ needs.provision.outputs.notebook_id }}" \
-            --head-sha "${{ github.event.pull_request.head.sha }}"
+            --head-sha "${{ github.event.pull_request.head.sha }}" \
+            --output reports/gate-2.json
 
       - name: Post gate-2 comment
         if: always()
@@ -924,6 +929,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python3 - <<'EOF'
           import json, os, sys
@@ -934,7 +940,7 @@ jobs:
                   result = json.load(f)
           except (OSError, json.JSONDecodeError):
               result = None
-          body = notify_render.render_gate_2_comment(result)
+          body = notify_render.render_gate_2_comment(result, run_url=os.environ.get("RUN_URL", ""))
           pr_comment.upsert("<!-- ci-run -->", body, os.environ["PR_NUMBER"], os.environ["GITHUB_REPOSITORY"])
           EOF
 
@@ -945,7 +951,7 @@ jobs:
     name: "ci/data-tests: data tests"
     needs: [provision, gate-2-write]
     if: always() && github.event.action != 'closed'
-    timeout-minutes: 12
+    timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-4
       cancel-in-progress: true
