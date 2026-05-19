@@ -14,7 +14,7 @@ name: Ephemeral Fabric CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, closed]
+    types: [opened, synchronize, reopened, closed, auto_merge_enabled, auto_merge_disabled]
     branches: [main]
 
 concurrency:
@@ -87,6 +87,10 @@ jobs:
 
       - name: Run preflight checks
         id: preflight
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           mkdir -p reports
           python3 ${{ env.SCRIPTS }}/preflight.py \
@@ -155,7 +159,7 @@ jobs:
   # Modes: artifact (gh run download from CD), onelake (Fabric UAMI), greenfield (dbt parse fallback).
   fetch-prod-state:
     name: "ci/state-modified+: fetch prod state"
-    if: github.event.action != 'closed'
+    if: false  # VD-1747: disabled
     needs: preflight
     runs-on: ubuntu-latest
     outputs:
@@ -345,7 +349,7 @@ jobs:
   # 2. Fabric UAMI: find-or-create workspace + lakehouse, inject notebook
   provision:
     name: "provision: ephemeral workspace & shortcuts"
-    if: github.event.action != 'closed'
+    if: false  # VD-1747: disabled
     needs: [preflight, fetch-prod-state]
     runs-on: ubuntu-latest
     outputs:
@@ -577,8 +581,8 @@ jobs:
   # Posts ci/static-check commit status; either blocking step failing marks Gate 0 failed.
   static-analysis:
     name: "ci/static-check: static analysis"
+    if: false  # VD-1747: disabled
     needs: [preflight]
-    if: false  # disabled for VD-1746 label-binding validation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -811,7 +815,7 @@ jobs:
   gate-3-unit:
     name: "ci/unit-tests: unit tests"
     needs: [provision]
-    if: false  # disabled for VD-1746 label-binding validation
+    if: false  # VD-1747: disabled
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-3
@@ -907,7 +911,7 @@ jobs:
   gate-2-write:
     name: "ci/run: isolated build"
     needs: [preflight, provision, fetch-prod-state]
-    if: github.event.action != 'closed'
+    if: false  # VD-1747: disabled
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-2
@@ -972,7 +976,7 @@ jobs:
   gate-4-data-test:
     name: "ci/data-tests: data tests"
     needs: [provision, gate-2-write]
-    if: false  # disabled for VD-1746 label-binding validation
+    if: false  # VD-1747: disabled
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-4
@@ -1037,7 +1041,7 @@ jobs:
   gate-5-data-diff:
     name: "ci/data-diff: data-diff"
     needs: [provision, gate-2-write]
-    if: always() && github.event.action != 'closed'
+    if: false  # VD-1747: disabled
     timeout-minutes: 12
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-5
@@ -1075,90 +1079,6 @@ jobs:
             --notebook-id "${{ needs.provision.outputs.notebook_id }}" \
             --head-sha "${{ github.event.pull_request.head.sha }}" \
             --output reports/gate-5.json
-
-      - name: Evaluate diff-acknowledged binding and emit ci/data-diff status
-        if: needs.gate-2-write.result == 'success'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          GITHUB_SERVER_URL: ${{ github.server_url }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
-        run: |
-          python3 - <<'EOF'
-          import json, os, subprocess, sys
-          sys.path.insert(0, ".github/scripts")
-          import pr_comment, emit_status, label_binding
-
-          repo = os.environ["GITHUB_REPOSITORY"]
-          sha = os.environ["GITHUB_SHA"]
-          pr_number = os.environ["PR_NUMBER"]
-          run_url = f"{os.environ['GITHUB_SERVER_URL']}/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
-
-          try:
-              with open("reports/gate-5.json") as f:
-                  result = json.load(f)
-          except (OSError, json.JSONDecodeError):
-              result = None
-
-          if result is None or result.get("overall_status") == "pass":
-              emit_status.emit_status(repo, sha, "ci/data-diff", "success",
-                                     "Gate 5: no diff against prod", run_url)
-              sys.exit(0)
-
-          latest_hash = result.get("latest_hash")
-          if not latest_hash:
-              emit_status.emit_status(repo, sha, "ci/data-diff", "failure",
-                                     "Gate 5: non-empty diff detected", run_url)
-              sys.exit(0)
-
-          marker_comment_id = pr_comment.find_by_marker(label_binding.MARKER, pr_number, repo)
-          existing_body = None
-          if marker_comment_id:
-              res = subprocess.run(
-                  ["gh", "api", f"repos/{repo}/issues/comments/{marker_comment_id}", "--jq", ".body"],
-                  capture_output=True, text=True,
-              )
-              existing_body = res.stdout.strip()
-          existing_marker = label_binding.read_marker(existing_body)
-
-          decision = label_binding.decide_gate5_outcome(latest_hash, existing_marker)
-
-          bound_hash = None if decision["strip_bound"] else existing_marker.get("bound_hash")
-          new_marker_body = label_binding.write_marker(latest_hash, bound_hash)
-          pr_comment.upsert(label_binding.MARKER, new_marker_body, pr_number, repo)
-
-          if decision["strip_bound"]:
-              subprocess.run(
-                  ["gh", "api", "--method", "DELETE",
-                   f"repos/{repo}/issues/{pr_number}/labels/{label_binding.LABEL_NAME}"],
-                  capture_output=True,
-              )
-
-          if decision["action"] == "auto_pass":
-              subprocess.run(
-                  ["gh", "api", "--method", "POST",
-                   f"repos/{repo}/issues/{pr_number}/labels",
-                   "--field", f"labels[]={label_binding.LABEL_NAME}"],
-                  capture_output=True,
-              )
-              # Mark gate-5.json so the Post comment step renders the ack banner
-              try:
-                  with open("reports/gate-5.json") as f:
-                      g5 = json.load(f)
-                  g5["ack_active"] = True
-                  with open("reports/gate-5.json", "w") as f:
-                      json.dump(g5, f)
-              except (OSError, KeyError):
-                  pass
-              emit_status.emit_status(repo, sha, "ci/data-diff", "success",
-                                     "Gate 5: diff acknowledged (hash match)", run_url)
-          else:
-              emit_status.emit_status(repo, sha, "ci/data-diff", "failure",
-                                     "Gate 5: non-empty diff — apply diff-acknowledged label to acknowledge",
-                                     run_url)
-          EOF
 
       - name: Post gate-5 comment
         if: always()

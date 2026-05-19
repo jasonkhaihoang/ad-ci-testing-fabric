@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 
 try:
@@ -84,15 +85,37 @@ def parse_ci_config(yaml_str: str) -> dict:
     return {"ok": True, "config": config, "error": None, "line_number": None, "missing_keys": []}
 
 
+_AUTO_MERGE_VIOLATION_MESSAGE = (
+    "Per-PR auto-merge is enabled. Disable the auto-merge toggle on this PR — leaving it "
+    "on lets GitHub merge ahead of `domain-deploy` (once it ships) and bypasses the deploy lock."
+)
+
+
+def check_auto_merge_disabled(auto_merge_value) -> dict:
+    """Return {passed, message} for the auto_merge_disabled preflight check.
+
+    Null, missing (None), or empty dict → disabled → passed.
+    Any non-empty object → enabled → failed.
+    """
+    enabled = bool(auto_merge_value)
+    if enabled:
+        return {"passed": False, "message": _AUTO_MERGE_VIOLATION_MESSAGE}
+    return {"passed": True, "message": "Per-PR auto-merge is disabled."}
+
+
 def build_preflight_result(
     branch_name: str,
     yaml_str: str,
     behind_by: int = 0,
+    auto_merge=None,
 ) -> dict:
     """Build the full preflight result dict.
 
     ci_config is skipped when intent validation fails.
     behind_by > 0 is informational — does not fail preflight.
+    auto_merge: raw value from pulls/{pr}.auto_merge API field.
+                None / missing / {} → disabled (passes).
+                Non-empty object → enabled (fails).
     """
     intent_valid, slug = validate_intent_slug(branch_name)
 
@@ -119,6 +142,8 @@ def build_preflight_result(
         ),
     }
 
+    auto_merge_check = check_auto_merge_disabled(auto_merge)
+
     if not intent_valid:
         return {
             "overall_status": "fail",
@@ -130,6 +155,7 @@ def build_preflight_result(
                 "line_number": None,
                 "missing_keys": [],
             },
+            "auto_merge_disabled": auto_merge_check,
         }
 
     ci_raw = parse_ci_config(yaml_str)
@@ -140,13 +166,14 @@ def build_preflight_result(
         "missing_keys": ci_raw["missing_keys"],
     }
 
-    overall_status = "pass" if ci_raw["ok"] else "fail"
+    overall_status = "pass" if (ci_raw["ok"] and auto_merge_check["passed"]) else "fail"
 
     return {
         "overall_status": overall_status,
         "auto_rebase": auto_rebase,
         "intent": intent,
         "ci_config": ci_config,
+        "auto_merge_disabled": auto_merge_check,
     }
 
 
@@ -166,7 +193,25 @@ def main() -> None:
     except FileNotFoundError:
         pass
 
-    result = build_preflight_result(args.branch_name, yaml_str, args.behind_by)
+    # Fetch per-PR auto_merge field (read-only, uses existing GITHUB_TOKEN)
+    auto_merge = None
+    pr_number = os.environ.get("PR_NUMBER", "")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    if pr_number and repo:
+        try:
+            raw = subprocess.check_output(
+                ["gh", "api", f"repos/{repo}/pulls/{pr_number}", "--jq", ".auto_merge"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            ).strip()
+            # gh --jq returns "null" string for JSON null, or a JSON object string
+            if raw and raw != "null":
+                auto_merge = json.loads(raw)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError, OSError):
+            pass
+
+    result = build_preflight_result(args.branch_name, yaml_str, args.behind_by, auto_merge=auto_merge)
 
     output_dir = os.path.dirname(args.output)
     if output_dir:
@@ -184,7 +229,8 @@ def main() -> None:
         print(f"Config outputs written. intent_slug={slug}")
 
     if result["overall_status"] != "pass":
-        print(f"Preflight failed: intent={result['intent']['status']}, ci_config={result['ci_config']['status']}")
+        am_enabled = not result["auto_merge_disabled"]["passed"]
+        print(f"Preflight failed: intent={result['intent']['status']}, ci_config={result['ci_config']['status']}, auto_merge_enabled={am_enabled}")
         sys.exit(1)
 
     print("Preflight passed.")

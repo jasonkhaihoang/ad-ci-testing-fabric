@@ -968,11 +968,6 @@ def render_gate_5_comment(result) -> str:
             "Fix the Gate 2 failure and re-push to trigger Gate 5.\n"
         )
     section = render_gate_5(result)
-    if result.get("ack_active"):
-        section = f"✅ **Diff acknowledged** — bound hash matches current head. `ci/data-diff = success`\n\n{section}"
-    latest_hash = result.get("latest_hash")
-    if latest_hash:
-        section += f"\n_Diff content hash: `{latest_hash}`_\n"
     return f"{GATE_5_MARKER}\n{section}"
 
 
@@ -989,8 +984,8 @@ def _preflight_row_icon(status: str) -> str:
 def render_preflight_comment(result: dict | None) -> str:
     """Render the <!-- ci-preflight --> upserted PR comment section.
 
-    Three rows: auto-rebase (informational), intent, ci-config.
-    ci-config shows skipped when intent failed.
+    Rows always shown: auto-rebase (informational), intent, ci-config.
+    Violation row added only when auto_merge_disabled check failed.
     """
     if not result:
         return f"{PREFLIGHT_MARKER}\n## `ci/preflight` ⚠️\n\n_No data available._\n"
@@ -1024,6 +1019,11 @@ def render_preflight_comment(result: dict | None) -> str:
             ci_detail = f"{ci_detail} — missing: {formatted}"
 
     rows.append(f"| ci-config | {ci_icon} | {ci_detail} |")
+
+    # Violation row: only shown when auto-merge is enabled (failure case)
+    am = result.get("auto_merge_disabled", {})
+    if am and not am.get("passed", True):
+        rows.append(f"| auto-merge | ❌ | {am.get('message', '')} |")
 
     table = (
         "| Step | Status | Detail |\n"
