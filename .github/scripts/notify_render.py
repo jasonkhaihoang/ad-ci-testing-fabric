@@ -968,6 +968,11 @@ def render_gate_5_comment(result) -> str:
             "Fix the Gate 2 failure and re-push to trigger Gate 5.\n"
         )
     section = render_gate_5(result)
+    if result.get("ack_active"):
+        section = f"✅ **Diff acknowledged** — bound hash matches current head. `ci/data-diff = success`\n\n{section}"
+    latest_hash = result.get("latest_hash")
+    if latest_hash:
+        section += f"\n_Diff content hash: `{latest_hash}`_\n"
     return f"{GATE_5_MARKER}\n{section}"
 
 
