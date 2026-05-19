@@ -28,22 +28,29 @@ def build_deployment_manifest(
     closure_uids: list[str],
     current_nodes: dict,
     prod_node_ids: set[str],
+    project_name: str = "",
 ) -> dict:
     """Pure: build the deployment manifest dict from already-fetched values.
 
     prod_node_ids: pass empty set for greenfield (all pre_existing_in_prod: false).
     current_nodes: nodes dict from target/manifest.json (uid -> node).
     closure_uids: unique_ids from dbt ls --select state:modified+.
+    project_name: when provided, only models with matching package_name are emitted.
     """
     artifacts = []
     for uid in closure_uids:
-        node = current_nodes.get(uid) or {}
+        node = current_nodes.get(uid)
+        if node is None:
+            node = {}
+        elif project_name and node.get("package_name") != project_name:
+            continue
         config = node.get("config") or {}
         artifacts.append(
             {
                 "unique_id": uid,
                 "name": node.get("name", ""),
                 "materialized": config.get("materialized", ""),
+                "schema": node.get("schema", ""),
                 "pre_existing_in_prod": uid in prod_node_ids,
                 "unique_key": config.get("unique_key"),
             }
@@ -78,7 +85,9 @@ def main() -> None:
     greenfield = _is_greenfield()
     closure_uids = run_dbt_ls() if not greenfield else []
 
-    current_nodes = (_read_json("target/manifest.json") or {}).get("nodes", {})
+    current_manifest = _read_json("target/manifest.json") or {}
+    current_nodes = current_manifest.get("nodes", {})
+    project_name: str = current_manifest.get("metadata", {}).get("project_name", "")
 
     prod_node_ids: set[str] = set()
     if not greenfield:
@@ -90,6 +99,7 @@ def main() -> None:
         closure_uids=closure_uids,
         current_nodes=current_nodes,
         prod_node_ids=prod_node_ids,
+        project_name=project_name,
     )
 
     os.makedirs("reports", exist_ok=True)

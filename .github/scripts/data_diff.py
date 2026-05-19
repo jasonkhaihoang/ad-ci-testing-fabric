@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from label_binding import compute_diff_hash
+
 ExecutorFn = Callable[[str], list]
 
 ColumnInfo = dict  # {"name": str, "dtype": str, "nullable": bool}
@@ -240,5 +242,6 @@ def build_gate_5_result(head_sha: str, artifacts: list[dict]) -> dict:
         "gate": "5",
         "head_sha": head_sha,
         "overall_status": gate_5_overall_status(artifacts),
+        "latest_hash": compute_diff_hash(artifacts),
         "artifacts": artifacts,
     }
