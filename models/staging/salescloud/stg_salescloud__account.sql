@@ -34,3 +34,5 @@ renamed as (
 )
 
 select * from renamed
+
+-- VD-2079 AC2 MAIN branch change
