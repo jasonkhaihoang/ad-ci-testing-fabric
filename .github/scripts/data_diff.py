@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import time
+import urllib.error
 import urllib.request
 from typing import Any, Callable
 
@@ -168,10 +169,13 @@ def execute_livy_statement(
     session_url: str,
     code: str,
     token_fn: "Callable[[], str]",
+    timeout_s: int = 90,
 ) -> str:
     """Submit PySpark code to a Livy session; return text/plain output.
 
-    Polls every 2s up to 90s for state == 'available'.
+    Polls every 2s up to timeout_s for state == 'available'. Default 90s suits
+    warm sessions; pass a larger value (e.g. 300) for the first statement after
+    create_livy_session, where Spark executor cold-start adds 60–180s.
     Raises RuntimeError on output error, TimeoutError on timeout.
     """
     token = token_fn()
@@ -179,7 +183,7 @@ def execute_livy_statement(
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
-    body = json.dumps({"code": code}).encode()
+    body = json.dumps({"code": code, "kind": "pyspark"}).encode()
     req = urllib.request.Request(
         f"{session_url}/statements", data=body, method="POST", headers=headers,
     )
@@ -189,7 +193,7 @@ def execute_livy_statement(
 
     stmt_url = f"{session_url}/statements/{stmt_id}"
     elapsed = 0
-    while elapsed < 90:
+    while elapsed < timeout_s:
         time.sleep(2)
         elapsed += 2
         req = urllib.request.Request(stmt_url, headers={"Authorization": f"Bearer {token}"})
@@ -200,7 +204,7 @@ def execute_livy_statement(
             if output.get("status") == "error":
                 raise RuntimeError(output.get("evalue", "Livy statement error"))
             return (output.get("data") or {}).get("text/plain", "")
-    raise TimeoutError(f"Livy statement {stmt_id} did not complete within 90s")
+    raise TimeoutError(f"Livy statement {stmt_id} did not complete within {timeout_s}s")
 
 
 def execute_spark_schema(
@@ -243,6 +247,66 @@ def make_livy_sql_executor(
         return json.loads(output)
 
     return executor
+
+
+def create_livy_session(
+    livy_base_url: str,
+    session_name: str,
+    token_fn: "Callable[[], str]",
+) -> str:
+    """Create a new Livy session; return session_id as str.
+
+    POSTs to {livy_base_url}/sessions, polls every 2s up to 600s for state == 'idle'.
+    Raises TimeoutError on poll timeout; RuntimeError on terminal state (dead/error/killed).
+    """
+    token = token_fn()
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    body = json.dumps({"name": session_name}).encode()
+    req = urllib.request.Request(
+        f"{livy_base_url}/sessions", data=body, method="POST", headers=headers,
+    )
+    with urllib.request.urlopen(req) as resp:
+        session = json.loads(resp.read())
+    session_id = session["id"]
+    poll_url = f"{livy_base_url}/sessions/{session_id}"
+    session_url = f"{livy_base_url}/sessions/{session_id}"
+
+    try:
+        elapsed = 0
+        while elapsed < 600:
+            time.sleep(2)
+            elapsed += 2
+            req = urllib.request.Request(poll_url, headers={"Authorization": f"Bearer {token_fn()}"})
+            with urllib.request.urlopen(req) as resp:
+                session = json.loads(resp.read())
+            state = session.get("state")
+            if state == "idle":
+                return str(session_id)
+            if state in ("dead", "error", "killed"):
+                raise RuntimeError(f"Livy session {session_id} entered terminal state: {state}")
+        raise TimeoutError(f"Livy session {session_id} did not reach idle within 600s")
+    except Exception:
+        delete_livy_session(session_url, token_fn)
+        raise
+
+
+def delete_livy_session(
+    session_url: str,
+    token_fn: "Callable[[], str]",
+) -> None:
+    """Delete a Livy session. Idempotent: swallows 404."""
+    req = urllib.request.Request(
+        session_url, method="DELETE",
+        headers={"Authorization": f"Bearer {token_fn()}"},
+    )
+    try:
+        with urllib.request.urlopen(req):
+            pass
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            raise
+    except urllib.error.URLError:
+        pass
 
 
 # ── Artifact-level orchestration ──────────────────────────────────────────────

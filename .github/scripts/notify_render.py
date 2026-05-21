@@ -472,8 +472,12 @@ def render_gate_5(result: dict | None) -> str:
     passed = overall == "pass"
     artifacts = result.get("artifacts") or []
 
-    brand_new = [a for a in artifacts if a.get("baseline") is None]
-    existing = [a for a in artifacts if a.get("baseline") is not None]
+    # Partition: errored artifacts (any non-null `error` field) are split out
+    # from genuinely brand-new ones so failed prod-baseline lookups are visible
+    # rather than silently rendered as auto-passes (VD-2097).
+    errored = [a for a in artifacts if a.get("error")]
+    brand_new = [a for a in artifacts if a.get("baseline") is None and not a.get("error")]
+    existing = [a for a in artifacts if a.get("baseline") is not None and not a.get("error")]
 
     head = f"## Data-Diff vs Prod (ci/data-diff) {_icon(passed)}\n\n"
 
@@ -494,11 +498,26 @@ def render_gate_5(result: dict | None) -> str:
         summary_parts.append(f"{len(brand_new)} brand-new")
     if existing:
         summary_parts.append(f"{len(existing)} compared")
+    if errored:
+        summary_parts.append(f"{len(errored)} errored")
     if n_diff:
         summary_parts.append(f"{n_diff} with diff")
     head += " · ".join(summary_parts) + "\n"
 
     sections = [head]
+
+    if errored:
+        rows = "\n".join(
+            f"| `{a['name']}` | `{a.get('materialized', '')}` | {(a.get('error') or '')[:200]} |"
+            for a in errored
+        )
+        sections.append(
+            "\n<details>\n<summary>Errors during comparison</summary>\n\n"
+            "| Artifact | Materialization | Error |\n"
+            "|----------|-----------------|-------|\n"
+            + rows
+            + "\n\n</details>\n"
+        )
 
     if brand_new:
         rows = "\n".join(
