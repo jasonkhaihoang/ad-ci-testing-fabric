@@ -50,7 +50,7 @@ dbt_fab_spark:
       authentication: fabric_notebook
       endpoint: https://msitapi.fabric.microsoft.com/v1
       workspaceid: '7aeb9e12-8ad0-421d-82ad-262512491e16'
-      workspace_name: '`vibedata-prd-sales-pipeline`'
+      workspace_name: '`vibedata_prd_sales_pipeline`'
       lakehouse: '`lh_prd_salespipeline`'
       lakehouseid: 'fe90ede0-e379-446e-9e69-1b487dc71946'
       lakehouse_schemas_enabled: true
