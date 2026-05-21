@@ -101,15 +101,15 @@ def build_comment(violations: dict[str, list[dict]]) -> str:
     )
 
     return f"""{COMMENT_MARKER}
-## dbt Project Evaluator (advisory) — ci/dbt-project-evaluate
-
-> These are advisory — they do not block merge.
-> Reference: [dbt-project-evaluator docs]({EVALUATOR_DOCS_URL})
+## dbt Project Evaluator
 
 | Category | Violations |
 |----------|-----------|
 {table}
 {detail_block}{no_violations_note}
+
+> These are advisory — they do not block merge.
+> Reference: [dbt-project-evaluator docs]({EVALUATOR_DOCS_URL})
 """
 
 

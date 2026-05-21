@@ -108,26 +108,41 @@ def build_preflight_result(
     yaml_str: str,
     behind_by: int = 0,
     auto_merge=None,
+    conflict_files: list | None = None,
 ) -> dict:
     """Build the full preflight result dict.
 
     ci_config is skipped when intent validation fails.
-    behind_by > 0 is informational — does not fail preflight.
+    conflict_files: list of file paths that conflict with main. When non-empty
+                    and behind_by > 0, auto_rebase.status is set to "fail" and
+                    overall_status is forced to "fail".
     auto_merge: raw value from pulls/{pr}.auto_merge API field.
                 None / missing / {} → disabled (passes).
                 Non-empty object → enabled (fails).
     """
     intent_valid, slug = validate_intent_slug(branch_name)
 
-    auto_rebase = {
-        "status": "ok" if behind_by == 0 else "behind",
-        "behind_by": behind_by,
-        "message": (
-            "Branch is up-to-date with main."
-            if behind_by == 0
-            else f"Branch is {behind_by} commit(s) behind main — rebase manually before merge."
-        ),
-    }
+    has_conflicts = bool(conflict_files) and behind_by > 0
+    if has_conflicts:
+        auto_rebase = {
+            "status": "fail",
+            "behind_by": behind_by,
+            "conflict_files": conflict_files,
+            "message": (
+                f"Branch is {behind_by} commit(s) behind main with "
+                f"{len(conflict_files)} conflict(s) — resolve before merging."
+            ),
+        }
+    else:
+        auto_rebase = {
+            "status": "ok" if behind_by == 0 else "behind",
+            "behind_by": behind_by,
+            "message": (
+                "Branch is up-to-date with main."
+                if behind_by == 0
+                else f"Branch is {behind_by} commit(s) behind main — rebase manually before merge."
+            ),
+        }
 
     intent = {
         "status": "pass" if intent_valid else "fail",
@@ -166,7 +181,7 @@ def build_preflight_result(
         "missing_keys": ci_raw["missing_keys"],
     }
 
-    overall_status = "pass" if (ci_raw["ok"] and auto_merge_check["passed"]) else "fail"
+    overall_status = "pass" if (ci_raw["ok"] and auto_merge_check["passed"] and not has_conflicts) else "fail"
 
     return {
         "overall_status": overall_status,
@@ -181,6 +196,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Preflight validation for domain CI.")
     parser.add_argument("--branch-name", required=True)
     parser.add_argument("--behind-by", type=int, default=0)
+    parser.add_argument("--conflict-files", default="")
     parser.add_argument("--ci-config-path", default="ci-config.yml")
     parser.add_argument("--output", default="reports/preflight.json")
     parser.add_argument("--github-output", default="")
@@ -211,7 +227,11 @@ def main() -> None:
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError, OSError):
             pass
 
-    result = build_preflight_result(args.branch_name, yaml_str, args.behind_by, auto_merge=auto_merge)
+    conflict_files = [f for f in args.conflict_files.split(",") if f.strip()] if args.conflict_files else []
+    result = build_preflight_result(
+        args.branch_name, yaml_str, args.behind_by,
+        auto_merge=auto_merge, conflict_files=conflict_files,
+    )
 
     output_dir = os.path.dirname(args.output)
     if output_dir:

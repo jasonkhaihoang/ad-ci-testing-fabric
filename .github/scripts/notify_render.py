@@ -208,7 +208,7 @@ def render_gate_0(compile_result: dict, schema_gate: dict, *, extra_rows: str = 
     )
 
     overall_icon = _icon(gate_passed)
-    section = f"## Static Analysis (ci/static-check) {overall_icon}\n\n{table}"
+    section = f"## Gate 0 — Static Analysis {overall_icon}\n\n{table}"
 
     if violations:
         lines = "\n".join(
@@ -233,47 +233,11 @@ def render_gate_3(summary: dict) -> tuple[bool, str]:
     passed = overall == "pass"
 
     summary_line = f"{p} passed / {f} failed / {e} errored / {s} skipped"
-    head = f"## Unit Tests (ci/unit-tests) {_icon(passed)}\n\n{summary_line}\n"
-
-    all_tests = summary.get("tests") or []
-    modified_models = summary.get("modified_models") or []
-    coverage_line = ""
-    if modified_models and all_tests:
-        covered = {t.get("model") for t in all_tests if t.get("model")}
-        uncovered = [m for m in modified_models if m not in covered]
-        if uncovered:
-            coverage_line = (
-                f"\nCoverage: {len(modified_models) - len(uncovered)} of {len(modified_models)} "
-                f"modified models have unit tests "
-                f"({len(uncovered)} without coverage: {', '.join(f'`{m}`' for m in uncovered)})\n"
-            )
-        else:
-            coverage_line = (
-                f"\nCoverage: {len(modified_models)} of {len(modified_models)} "
-                f"modified models have unit tests\n"
-            )
+    head = f"## Gate 3 — Unit Tests {_icon(passed)}\n\n{summary_line}\n"
 
     failures = summary.get("failures") or []
     if not failures:
-        result_md = head + coverage_line
-        if all_tests and passed:
-            by_model: dict[str, list] = {}
-            for t in all_tests:
-                m = t.get("model", "")
-                by_model.setdefault(m, []).append(t)
-            rows = []
-            for model, tests in sorted(by_model.items()):
-                rows.append(f"\n**`{model}`** ({len(tests)})")
-                for t in tests:
-                    icon = _icon(t.get("status") in ("pass",))
-                    rows.append(f"- {icon} {t.get('name', '')}")
-            detail = "\n".join(rows)
-            result_md += (
-                "\n<details>\n<summary>Tests by model</summary>\n\n"
-                + detail
-                + "\n\n</details>\n"
-            )
-        return passed, result_md + "\n"
+        return passed, head + "\n"
 
     def _first_line(msg: str) -> str:
         lines = (msg or "").splitlines()
@@ -289,7 +253,6 @@ def render_gate_3(summary: dict) -> tuple[bool, str]:
 
     section = (
         head
-        + coverage_line
         + "\n<details>\n<summary>Failing tests</summary>\n\n"
         + "| Test | Status | Message |\n|------|--------|---------|\n"
         + rows
@@ -355,7 +318,7 @@ def render_gate_2(result: dict | None) -> str:
         parts.append(f"`{head_sha[:7]}`")
     summary_line = " · ".join(parts)
 
-    head = f"## Isolated Build (ci/run) {_icon(passed)}\n\n{summary_line}\n"
+    head = f"## Gate 2 — Write {_icon(passed)}\n\n{summary_line}\n"
 
     sections = [head]
     for step_label, step_status, step_models in [
@@ -381,20 +344,6 @@ def render_gate_2(result: dict | None) -> str:
                 + "\n\n</details>\n"
             )
 
-    # Happy-path built-models fold (only on build success)
-    if build_status == "pass" and build_models:
-        rows = "\n".join(
-            f"| `{m.get('name', '')}` | `{m.get('materialization', '')}` "
-            f"| {m.get('rows') if m.get('rows') is not None else '—'} |"
-            for m in build_models
-        )
-        sections.append(
-            "\n<details>\n<summary>Built models</summary>\n\n"
-            "| Model | Materialization | Rows |\n|-------|-----------------|------|\n"
-            + rows
-            + "\n\n</details>\n"
-        )
-
     return "".join(sections)
 
 
@@ -409,7 +358,7 @@ def render_gate_4(result: dict | None) -> str:
     failing = [t for t in tests if t.get("status") in ("fail", "error")]
     skipped = [t for t in tests if t.get("status") == "skip"]
     summary_line = f"{len(passing)} passed / {len(failing)} failed / {len(skipped)} skipped"
-    head = f"## Data Tests (ci/data-tests) {_icon(passed)}\n\n{summary_line}\n"
+    head = f"## Gate 4 — Data Tests {_icon(passed)}\n\n{summary_line}\n"
     advisory = ""
     if not store_failures_config_ok:
         advisory = (
@@ -417,24 +366,8 @@ def render_gate_4(result: dict | None) -> str:
             "and/or `+store_failures_as: table`. Failure drill-down tables will not be available. "
             "Gate signal is unaffected.\n"
         )
-    # Per-model count block
-    by_model: dict[str, dict] = {}
-    for t in tests:
-        m = t.get("model", "")
-        rec = by_model.setdefault(m, {"ran": 0, "failed": 0})
-        rec["ran"] += 1
-        if t.get("status") in ("fail", "error"):
-            rec["failed"] += 1
-    model_count_block = ""
-    if by_model:
-        lines = "\n".join(
-            f"- `{m}` — {v['ran']} ran, {v['failed']} failed"
-            for m, v in sorted(by_model.items())
-        )
-        model_count_block = "\n**Per model:**\n" + lines + "\n"
-
     if not failing:
-        return head + advisory + model_count_block + "\n"
+        return head + advisory + "\n"
     sorted_failing = sorted(failing, key=lambda t: t.get("name", ""))
     shown = sorted_failing[:_GATE4_FAILING_CAP]
     remainder = len(sorted_failing) - len(shown)
@@ -455,8 +388,7 @@ def render_gate_4(result: dict | None) -> str:
     return (
         head
         + advisory
-        + model_count_block
-        + "\n<details open>\n<summary>Failing tests</summary>\n\n"
+        + "\n<details>\n<summary>Failing tests</summary>\n\n"
         + "| Test | Model | Status | Failures | Message |\n"
         + "|------|-------|--------|----------|---------|\n"
         + "\n".join(rows)
@@ -479,7 +411,7 @@ def render_gate_5(result: dict | None) -> str:
     brand_new = [a for a in artifacts if a.get("baseline") is None and not a.get("error")]
     existing = [a for a in artifacts if a.get("baseline") is not None and not a.get("error")]
 
-    head = f"## Data-Diff vs Prod (ci/data-diff) {_icon(passed)}\n\n"
+    head = f"## Gate 5 — Data-Diff vs Prod {_icon(passed)}\n\n"
 
     if not artifacts:
         return head + "_No artifacts in diff scope._\n"
@@ -851,18 +783,17 @@ def render_workspace_comment(
     *,
     provision_failed: bool = False,
     provision_steps: dict[str, str] | None = None,
-    notebook_url: str = "",
 ) -> str:
     ws_url = FABRIC_WORKSPACE_URL.format(workspace_id=workspace_id)
     if provision_failed:
         table = _render_provision_steps_table(provision_steps or {})
         return (
             f"{COMMENT_MARKER}\n"
-            f"## Ephemeral Workspace Ready (ci/provision-workspace) ❌\n\n"
+            f"## ⚠️ Provision Failed\n\n"
             f"**Workspace:** [{workspace_name}]({ws_url})  "
             f"**Branch:** `{head_branch}`\n\n"
             f"{table}\n\n"
-            f"> ci/run, ci/unit-tests, ci/data-tests, and ci/data-diff cannot run until provisioning succeeds. Fix the failing step and push again."
+            f"> Gates 2–5 will not run. Fix the failing step and push again."
         )
     greenfield_notice = ""
     if greenfield_fallback:
@@ -874,51 +805,23 @@ def render_workspace_comment(
     seeding_section = _render_shortcut_seeding(shortcut_seeding)
     if seeding_section:
         seeding_section = "\n" + seeding_section
-    nb_link = f"\n**Notebook:** [Open in Fabric]({notebook_url})" if notebook_url else ""
     return f"""{COMMENT_MARKER}
-## Ephemeral Workspace Ready (ci/provision-workspace)
+## Ephemeral Workspace Ready
 
 **Workspace:** [{workspace_name}]({ws_url})
-**Branch:** `{head_branch}`{nb_link}
+**Branch:** `{head_branch}`
 {greenfield_notice}
 ### Developer Checklist
-- [ ] Open the workspace and run these notebook cells in order:
-  1. **Clone** — shallow-clones prod tables into the ephemeral lakehouse
-  2. **Run** — `dbt run --select state:modified+` (writes the modified set)
-  3. **Unit Test** — `dbt test --select state:modified+,test_type:unit` against `_empty_build`
-  4. **Data Test** — `dbt test --select state:modified+ --store-failures`
-- [ ] Note: `ci/data-diff` runs automatically in CI — no manual cell required
-- [ ] Validate results meet the intent spec acceptance criteria
+- [ ] Open the workspace and run the notebook cells in order:
+  - **Cell: Clone** — `dbt clone --select state:modified+` *(resets D and D+ to prod state)*
+  - **Cell: Build** — `dbt build --select state:modified+ --defer`
+  - **Cell: Test** — `dbt test --select state:modified+ --store-failures`
+- [ ] Review any dbt test failures in the workspace
+- [ ] Validate results meet acceptance criteria from intent spec
 - [ ] Mark PR ready for review
 
 > CI reports available as workflow artifacts.
 {seeding_section}"""
-
-
-def render_provision_failed(
-    *,
-    workspace_name: str = "",
-    workspace_id: str = "",
-    head_branch: str = "",
-    run_url: str = "",
-) -> str:
-    """Render ci/provision-workspace failure comment when provisioning errored."""
-    ws_url = FABRIC_WORKSPACE_URL.format(workspace_id=workspace_id) if workspace_id else ""
-    ws_ref = f"[{workspace_name}]({ws_url})" if ws_url else workspace_name or "workspace"
-    link = f" [View CI run]({run_url})" if run_url else ""
-    branch_line = f"\n**Branch:** `{head_branch}`" if head_branch else ""
-    return (
-        f"{COMMENT_MARKER}\n"
-        f"## Ephemeral Workspace Ready (ci/provision-workspace) ❌\n\n"
-        f"**Workspace:** {ws_ref}{branch_line}\n\n"
-        f"Workspace provisioning failed before the notebook could be created.{link}\n\n"
-        f"**Likely causes:**\n"
-        f"- Fabric capacity exhausted\n"
-        f"- Fabric API transient error or rate-limit\n"
-        f"- Shortcut derivation crashed before workspace handoff\n\n"
-        f"ci/run, ci/unit-tests, ci/data-tests, and ci/data-diff cannot run until "
-        f"provisioning succeeds. Re-run this job after addressing the cause, or push a new commit.\n"
-    )
 
 
 GATE_0_MARKER = "<!-- ci-static-check -->"
@@ -944,7 +847,7 @@ def render_gate_0_comment(
     has_tools = any(x is not None for x in [ruff, sqlfluff, gitleaks, scorecard, shortcut_seeding])
 
     if not has_gate_0 and not has_tools:
-        return f"{GATE_0_MARKER}\n## Static Analysis (ci/static-check) ⚠️\n\n_No data available._\n"
+        return f"{GATE_0_MARKER}\n## Gate 0 — Static Analysis ⚠️\n\n_No data available._\n"
 
     # Compute tool results first so summary rows can be embedded in the Gate 0 table
     tool_table_rows = ""
@@ -972,8 +875,8 @@ def render_gate_0_comment(
     overall_passed = gate_0_passed and all(tool_passed_flags)
     if overall_passed != gate_0_passed:
         section = section.replace(
-            f"## Static Analysis (ci/static-check) {_icon(gate_0_passed)}",
-            f"## Static Analysis (ci/static-check) {_icon(overall_passed)}",
+            f"## Gate 0 — Static Analysis {_icon(gate_0_passed)}",
+            f"## Gate 0 — Static Analysis {_icon(overall_passed)}",
         )
 
     parts = [f"{GATE_0_MARKER}\n{section}"] + tool_parts
@@ -1001,7 +904,7 @@ def render_gate_1_comment(
     `mode`, `category`, `reason`.
     """
     icon = _icon(passed)
-    heading = f"## Compile-time Logic (ci/state-modified+) {icon}"
+    heading = f"## Gate 1 — Compile-time Logic {icon}"
 
     if platform_error:
         mode = platform_error.get("mode", "artifact")
@@ -1014,7 +917,7 @@ def render_gate_1_comment(
             f"- Mode: {mode}\n"
             f"- Category: {category}\n"
             f"- Reason: {reason}\n\n"
-            "ci/run, ci/unit-tests, ci/data-tests, and ci/data-diff did not run. Re-run this job once the issue is resolved, "
+            "Gates 2–5 did not run. Re-run this job once the issue is resolved, "
             "or push a new commit.\n"
         )
 
@@ -1048,13 +951,9 @@ def render_gate_2_comment(result, *, run_url: str = "") -> str:
         link = f" [View CI run]({run_url})" if run_url else ""
         return (
             f"{GATE_2_MARKER}\n"
-            f"## Isolated Build (ci/run) ❌\n\n"
-            f"Notebook run failed before writing results.{link}\n\n"
-            f"**Likely causes:**\n"
-            f"- Fabric notebook crash (HTTP error or timeout from Livy)\n"
-            f"- dbt compilation error preventing the clone or build from starting\n"
-            f"- Fabric capacity exhausted or transient API error\n\n"
-            f"Inspect the workflow logs above, then re-push or re-run ci/run.\n"
+            f"## Gate 2 — Write ❌\n\n"
+            f"Notebook run failed before writing results — "
+            f"check CI logs for HTTP error, timeout, or notebook crash.{link}\n"
         )
     section = render_gate_2(result)
     return f"{GATE_2_MARKER}\n{section}"
@@ -1062,7 +961,7 @@ def render_gate_2_comment(result, *, run_url: str = "") -> str:
 
 def render_gate_3_comment(result) -> str:
     if not result:
-        return f"{GATE_3_MARKER}\n## Unit Tests (ci/unit-tests) ⚠️\n\n_No data available._\n"
+        return f"{GATE_3_MARKER}\n## Gate 3 — Unit Tests ⚠️\n\n_No data available._\n"
     _, section = render_gate_3(result)
     return f"{GATE_3_MARKER}\n{section}"
 
@@ -1071,9 +970,9 @@ def render_gate_4_comment(result) -> str:
     if not result:
         return (
             f"{GATE_4_MARKER}\n"
-            "## Data Tests (ci/data-tests) ⏭️ Skipped\n\n"
-            "Isolated Build (ci/run) did not succeed — data tests require built rows to run against.\n\n"
-            "Fix the ci/run failure and re-push to trigger ci/data-tests.\n"
+            "## Gate 4 — Data Tests ⏭️ Skipped\n\n"
+            "Gate 2 (Isolated Build) did not succeed — data tests require built rows to run against.\n\n"
+            "Fix the Gate 2 failure and re-push to trigger Gate 4.\n"
         )
     section = render_gate_4(result)
     return f"{GATE_4_MARKER}\n{section}"
@@ -1083,9 +982,9 @@ def render_gate_5_comment(result) -> str:
     if not result:
         return (
             f"{GATE_5_MARKER}\n"
-            "## Data-Diff vs Prod (ci/data-diff) ⏭️ Skipped\n\n"
-            "Isolated Build (ci/run) did not succeed — data-diff requires built rows to compare against.\n\n"
-            "Fix the ci/run failure and re-push to trigger ci/data-diff.\n"
+            "## Gate 5 — Data-Diff vs Prod ⏭️ Skipped\n\n"
+            "Gate 2 (Isolated Build) did not succeed — data-diff requires built rows to compare against.\n\n"
+            "Fix the Gate 2 failure and re-push to trigger Gate 5.\n"
         )
     section = render_gate_5(result)
     if result.get("ack_active"):
@@ -1096,21 +995,6 @@ def render_gate_5_comment(result) -> str:
     return f"{GATE_5_MARKER}\n{section}"
 
 
-def render_gate_5_failed(run_url: str = "") -> str:
-    """Render ci/data-diff failure comment when Gate 5 ran but produced no result JSON."""
-    link = f" [View CI run]({run_url})" if run_url else ""
-    return (
-        f"{GATE_5_MARKER}\n"
-        f"## Data-Diff vs Prod (ci/data-diff) ❌\n\n"
-        f"Data-diff job failed before producing comparison results.{link}\n\n"
-        f"**Likely causes:**\n"
-        f"- Diff target table missing in prod or PR workspace\n"
-        f"- Lakehouse query timeout or transient Fabric error\n"
-        f"- Schema mismatch preventing the diff query from compiling\n\n"
-        f"Inspect the workflow logs above, then re-push or re-run the data-diff job.\n"
-    )
-
-
 def _preflight_row_icon(status: str) -> str:
     return {
         "pass": "✅",
@@ -1119,47 +1003,6 @@ def _preflight_row_icon(status: str) -> str:
         "skipped": "⏭️",
         "behind": "⚠️",
     }.get(status, "⚠️")
-
-
-def _preflight_remediation_footer(result: dict) -> str:
-    bullets = []
-
-    intent = result.get("intent", {})
-    if intent.get("status") == "fail":
-        bullets.append(
-            "- **intent:** Slug must match `intent/vd-<linear-number>-<kebab-summary>`, "
-            "e.g. `intent/vd-2062-gate3-v2`. Rename the branch and push."
-        )
-
-    ci = result.get("ci_config", {})
-    if ci.get("status") == "fail":
-        ref = f"ci-config.yml:{ci['line_number']}" if ci.get("line_number") else "ci-config.yml"
-        missing = ci.get("missing_keys") or []
-        keys_note = f" (missing: {', '.join(f'`{k}`' for k in missing)})" if missing else ""
-        bullets.append(f"- **ci-config:** Fix `{ref}`{keys_note} and push.")
-
-    am = result.get("auto_merge_disabled", {})
-    if am and not am.get("passed", True):
-        bullets.append(
-            "- **auto-merge:** See the per-PR violation surface for details on which rules are violated."
-        )
-
-    ar = result.get("auto_rebase", {})
-    if ar.get("status") == "fail":
-        conflict_files = ar.get("conflict_files") or []
-        if conflict_files:
-            files_note = "Conflicting files: " + ", ".join(f"`{f}`" for f in conflict_files)
-        else:
-            files_note = "Check `git status` for conflicting files."
-        bullets.append(
-            f"- **auto-rebase:** {files_note}\n"
-            f"  Run: `git fetch origin && git rebase origin/main`, resolve conflicts, "
-            f"then `git push --force-with-lease`."
-        )
-
-    if not bullets:
-        return ""
-    return "\n**How to fix:**\n\n" + "\n".join(bullets) + "\n"
 
 
 def render_preflight_comment(result: dict | None) -> str:
@@ -1212,14 +1055,24 @@ def render_preflight_comment(result: dict | None) -> str:
         + "\n".join(rows)
     )
 
-    body = (
+    # Conflict remediation block: shown only when auto_rebase detected conflicts
+    conflict_footer = ""
+    conflict_files = ar.get("conflict_files") or []
+    if conflict_files:
+        files_list = "\n".join(f"- `{f}`" for f in conflict_files)
+        conflict_footer = (
+            "\n\n**Conflicting files:**\n\n"
+            f"{files_list}\n\n"
+            "**To fix:** `git fetch origin && git rebase origin/main`, resolve conflicts, "
+            "then `git push --force-with-lease`"
+        )
+
+    return (
         f"{PREFLIGHT_MARKER}\n"
         f"## `ci/preflight` {heading_icon}\n\n"
-        f"{table}\n"
+        f"{table}"
+        f"{conflict_footer}\n"
     )
-    if overall == "fail":
-        body += _preflight_remediation_footer(result)
-    return body
 
 
 def render_details_comment(bundle: ReportBundle) -> str:
@@ -1264,7 +1117,7 @@ def render_details_comment(bundle: ReportBundle) -> str:
 
     parts = [
         f"{DETAILS_COMMENT_MARKER}\n"
-        f"## Static Analysis (ci/static-check) {overall_icon}\n\n"
+        f"## Gate 0 — Static Analysis {overall_icon}\n\n"
         f"{table}\n"
     ]
 
