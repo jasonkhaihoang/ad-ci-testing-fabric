@@ -13,7 +13,12 @@ Constants consumed by the notebook cell (VD-1974):
 """
 from __future__ import annotations
 
+import json
+import time
+import urllib.request
 from typing import Any, Callable
+
+from label_binding import compute_diff_hash
 
 ExecutorFn = Callable[[str], list]
 
@@ -159,6 +164,87 @@ def execute_value_delta(
     }
 
 
+def execute_livy_statement(
+    session_url: str,
+    code: str,
+    token_fn: "Callable[[], str]",
+) -> str:
+    """Submit PySpark code to a Livy session; return text/plain output.
+
+    Polls every 2s up to 90s for state == 'available'.
+    Raises RuntimeError on output error, TimeoutError on timeout.
+    """
+    token = token_fn()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    body = json.dumps({"code": code}).encode()
+    req = urllib.request.Request(
+        f"{session_url}/statements", data=body, method="POST", headers=headers,
+    )
+    with urllib.request.urlopen(req) as resp:
+        stmt = json.loads(resp.read())
+    stmt_id = stmt["id"]
+
+    stmt_url = f"{session_url}/statements/{stmt_id}"
+    elapsed = 0
+    while elapsed < 90:
+        time.sleep(2)
+        elapsed += 2
+        req = urllib.request.Request(stmt_url, headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req) as resp:
+            stmt = json.loads(resp.read())
+        if stmt["state"] == "available":
+            output = stmt.get("output") or {}
+            if output.get("status") == "error":
+                raise RuntimeError(output.get("evalue", "Livy statement error"))
+            return (output.get("data") or {}).get("text/plain", "")
+    raise TimeoutError(f"Livy statement {stmt_id} did not complete within 90s")
+
+
+def execute_spark_schema(
+    session_url: str,
+    table_ref: str,
+    token_fn: "Callable[[], str]",
+) -> "list[ColumnInfo]":
+    """Fetch table schema via Livy; return list of ColumnInfo dicts."""
+    code = f"print(spark.table('{table_ref}').schema.json())"
+    output = execute_livy_statement(session_url, code, token_fn)
+    schema = json.loads(output)
+    return [
+        {
+            "name": f["name"],
+            "dtype": f["type"] if isinstance(f["type"], str) else json.dumps(f["type"]),
+            "nullable": f["nullable"],
+        }
+        for f in schema["fields"]
+    ]
+
+
+def execute_spark_count(
+    session_url: str,
+    table_ref: str,
+    token_fn: "Callable[[], str]",
+) -> int:
+    """Fetch table row count via Livy."""
+    code = f"print(spark.table('{table_ref}').count())"
+    return int(execute_livy_statement(session_url, code, token_fn).strip())
+
+
+def make_livy_sql_executor(
+    session_url: str,
+    token_fn: "Callable[[], str]",
+) -> "ExecutorFn":
+    """Return an ExecutorFn that runs SQL via Livy and returns a list of row dicts."""
+    def executor(sql: str) -> list:
+        code = f"import json\nprint(json.dumps([row.asDict() for row in spark.sql({sql!r}).collect()]))"
+        output = execute_livy_statement(session_url, code, token_fn)
+        return json.loads(output)
+
+    return executor
+
+
 # ── Artifact-level orchestration ──────────────────────────────────────────────
 
 def compute_artifact_diff(
@@ -208,13 +294,16 @@ def compute_artifact_diff(
 
 # ── Gate signal + result builder ───────────────────────────────────────────────
 
-def gate_5_overall_status(artifacts: list[dict]) -> str:
-    """Return 'pass' or 'fail'.
+def gate_5_overall_status(artifacts: list[dict], *, session_error: bool = False) -> str:
+    """Return 'pass', 'fail', or 'error'.
 
-    Pass: all brand-new (all baselines null) OR no non-empty diff across artifacts.
-    Fail: any artifact with non-empty schema, row-count, or value diff.
+    'error': session_error=True — Livy session dead, no diff computed.
+    'fail': any artifact with non-empty schema, row-count, or value diff.
+    'pass': all brand-new or no non-empty diff.
     Skipped value delta (skipped_no_unique_key: true or value_delta: null) does NOT fail.
     """
+    if session_error:
+        return "error"
     for a in artifacts:
         if a.get("baseline") is None:
             continue  # brand-new — auto-pass
@@ -234,11 +323,24 @@ def gate_5_overall_status(artifacts: list[dict]) -> str:
     return "pass"
 
 
-def build_gate_5_result(head_sha: str, artifacts: list[dict]) -> dict:
-    """Assemble the gate-5.json dict (design spec §9.2.2)."""
-    return {
+def build_gate_5_result(
+    head_sha: str,
+    artifacts: list[dict],
+    *,
+    session_error: str | None = None,
+) -> dict:
+    """Assemble the gate-5.json dict (design spec §9.2.2).
+
+    Pass session_error=<msg> for dead-session path; overall_status becomes 'error'
+    and a top-level session_error field is included.
+    """
+    result = {
         "gate": "5",
         "head_sha": head_sha,
-        "overall_status": gate_5_overall_status(artifacts),
+        "overall_status": gate_5_overall_status(artifacts, session_error=bool(session_error)),
+        "latest_hash": compute_diff_hash(artifacts),
         "artifacts": artifacts,
     }
+    if session_error:
+        result["session_error"] = session_error
+    return result

@@ -40,6 +40,7 @@ try:
         render_preflight_comment,
         PREFLIGHT_MARKER,
         render_gitleaks,
+        render_provision_failed,
         render_ruff,
         render_scorecard,
         _render_shortcut_seeding as _render_shortcut_seeding_impl,
@@ -77,6 +78,7 @@ except ImportError:
         render_preflight_comment,  # noqa: F401
         PREFLIGHT_MARKER,  # noqa: F401
         render_gitleaks,
+        render_provision_failed,
         render_ruff,
         render_scorecard,
         _render_shortcut_seeding as _render_shortcut_seeding_impl,
@@ -191,24 +193,25 @@ def post_workspace_comment_only():
     greenfield_fallback = os.environ.get("GREENFIELD_FALLBACK", "").lower() == "true"
     provision_outcome = os.environ.get("PROVISION_OUTCOME", "success")
     provision_failed = provision_outcome != "success"
-    provision_steps = {
-        "provision": os.environ.get("STEP_PROVISION", ""),
-        "create-environment": os.environ.get("STEP_CREATE_ENV", ""),
-        "publish-environment": os.environ.get("STEP_PUBLISH_ENV", ""),
-        "set-workspace-default": os.environ.get("STEP_SET_DEFAULT", ""),
-        "upload-prod-state": os.environ.get("STEP_UPLOAD_PROD_STATE", ""),
-        "derive-shortcuts": os.environ.get("STEP_DERIVE_SHORTCUTS", ""),
-        "seed-shortcuts": os.environ.get("STEP_SEED_SHORTCUTS", ""),
-        "generate-notebook": os.environ.get("STEP_GENERATE_NOTEBOOK", ""),
-    }
+    run_url = os.environ.get("RUN_URL", "")
 
-    workspace_comment = build_comment(
-        workspace_id, workspace_name, head_branch, greenfield_fallback,
-        provision_failed=provision_failed,
-        provision_steps=provision_steps,
-    )
+    notebook_id = os.environ.get("NOTEBOOK_ID", "")
+    notebook_url = ""
+    if notebook_id and workspace_id:
+        notebook_url = f"https://app.fabric.microsoft.com/groups/{workspace_id}/synapsenotebooks/{notebook_id}"
 
-    if not provision_failed:
+    if provision_failed:
+        workspace_comment = render_provision_failed(
+            workspace_name=workspace_name,
+            workspace_id=workspace_id,
+            head_branch=head_branch,
+            run_url=run_url,
+        )
+    else:
+        workspace_comment = build_comment(
+            workspace_id, workspace_name, head_branch, greenfield_fallback,
+            notebook_url=notebook_url,
+        )
         shortcut_seeding = load_report("reports/shortcut_seeding.json")
         shortcut_section = format_shortcut_seeding(shortcut_seeding)
         if shortcut_section:

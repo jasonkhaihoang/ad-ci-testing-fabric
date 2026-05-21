@@ -8,7 +8,8 @@ Output schema written to --output:
       "total": int,
       "counts": {"pass": int, "fail": int, "error": int, "skip": int},
       "failures": [{"name": str, "status": str, "message": str}],  # capped at 10
-      "truncated": bool
+      "truncated": bool,
+      "tests": [{"name": str, "model": str, "status": str}]  # one entry per test
     }
 
 Exit codes:
@@ -27,32 +28,44 @@ import runner_io
 _FAILURE_CAP = 10
 
 
+def _extract_model(unique_id: str) -> str:
+    """Extract model name from a dbt unit_test unique_id.
+
+    unit_test.<project>.<model>__<test_name> → <model>.
+    Returns "" for unique_ids that don't contain "__".
+    """
+    last = unique_id.split(".")[-1]
+    if "__" not in last:
+        return ""
+    return last.split("__")[0]
+
+
 def summarize(run_results: dict) -> dict:
     counts = {"pass": 0, "fail": 0, "error": 0, "skip": 0}
     failures: list[dict] = []
+    tests: list[dict] = []
 
     results = run_results.get("results") or []
     for r in results:
         status = r.get("status")
+        unique_id = r.get("unique_id", "")
+
         if status in ("pass", "success"):
+            norm = "pass"
             counts["pass"] += 1
         elif status == "fail":
+            norm = "fail"
             counts["fail"] += 1
-            failures.append({
-                "name": r.get("unique_id", ""),
-                "status": "fail",
-                "message": r.get("message") or "",
-            })
+            failures.append({"name": unique_id, "status": "fail", "message": r.get("message") or ""})
         elif status == "skip":
+            norm = "skip"
             counts["skip"] += 1
         else:
-            # "error" and any unknown/unexpected status bucket as error.
+            norm = "error"
             counts["error"] += 1
-            failures.append({
-                "name": r.get("unique_id", ""),
-                "status": "error",
-                "message": r.get("message") or "",
-            })
+            failures.append({"name": unique_id, "status": "error", "message": r.get("message") or ""})
+
+        tests.append({"name": unique_id, "model": _extract_model(unique_id), "status": norm})
 
     truncated = len(failures) > _FAILURE_CAP
     overall = "fail" if (counts["fail"] or counts["error"]) else "pass"
@@ -63,6 +76,7 @@ def summarize(run_results: dict) -> dict:
         "counts": counts,
         "failures": failures[:_FAILURE_CAP],
         "truncated": truncated,
+        "tests": tests,
     }
 
 
