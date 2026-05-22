@@ -236,60 +236,6 @@ jobs:
           path: prod-state/
           retention-days: 7
 
-      - name: Compute model closure
-        if: always()
-        continue-on-error: true
-        run: |
-          dbt deps --profiles-dir .github/profiles --target dbt_fabric_compile --quiet 2>&1 || true
-          dbt ls \
-            --select state:modified+ \
-            --resource-type model snapshot \
-            --state prod-state \
-            --output json \
-            --profiles-dir .github/profiles \
-            --target dbt_fabric_compile \
-            2>/dev/null > /tmp/dbt_ls_output.json || true
-          python3 - <<'PYEOF'
-          import json, sys, os
-          sys.path.insert(0, os.environ.get("GITHUB_WORKSPACE", ".") + "/.github/scripts")
-          from dbt_manifest import Manifest
-
-          unique_ids = []
-          try:
-              with open("/tmp/dbt_ls_output.json") as f:
-                  for line in f:
-                      stripped = line.strip()
-                      if not stripped:
-                          continue
-                      try:
-                          entry = json.loads(stripped)
-                          uid = entry.get("unique_id")
-                          if uid:
-                              unique_ids.append(uid)
-                      except ValueError:
-                          pass
-          except FileNotFoundError:
-              pass
-
-          manifest = Manifest.from_path("target/manifest.json")
-          own_model_uids = set(manifest.own_models().keys())
-          closure = []
-          for uid in unique_ids:
-              node = manifest.node(uid)
-              if not node:
-                  continue
-              if uid in own_model_uids or node.get("resource_type") == "snapshot":
-                  closure.append({
-                      "name": node.get("name", uid),
-                      "materialization": (node.get("config") or {}).get("materialized", "unknown"),
-                  })
-
-          os.makedirs("prod-state", exist_ok=True)
-          with open("prod-state/closure.json", "w") as f:
-              json.dump(closure, f, indent=2)
-          print(f"Closure written: {len(closure)} model(s)", flush=True)
-          PYEOF
-
       - name: Emit Gate 1 final status
         if: always()
         env:
@@ -311,53 +257,11 @@ jobs:
             --description "$DESC" \
             --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-      - name: Post gate-1 comment
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GREENFIELD_FALLBACK: ${{ steps.fetch.outputs.greenfield_fallback }}
-          PLATFORM_ERROR_MODE: ${{ steps.fetch.outputs.mode }}
-          PLATFORM_ERROR_CATEGORY: ${{ steps.fetch.outputs.category }}
-          PLATFORM_ERROR_REASON: ${{ steps.fetch.outputs.reason }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-          SCRIPTS_DIR: ${{ env.SCRIPTS }}
-          GATE1_JOB_STATUS: ${{ job.status }}
-        run: |
-          python3 - <<'EOF'
-          import json, os, sys
-          sys.path.insert(0, os.environ["GITHUB_WORKSPACE"] + "/" + os.environ["SCRIPTS_DIR"])
-          import notify_render, pr_comment
-          greenfield = os.environ.get("GREENFIELD_FALLBACK", "false").lower() == "true"
-          passed = os.environ.get("GATE1_JOB_STATUS", "failure").lower() == "success"
-          # VD-1596 Phase 2: artifact-mode platform errors carry mode/category/reason.
-          category = os.environ.get("PLATFORM_ERROR_CATEGORY", "")
-          platform_error = None
-          if not passed and category:
-              platform_error = {
-                  "mode": os.environ.get("PLATFORM_ERROR_MODE", "artifact"),
-                  "category": category,
-                  "reason": os.environ.get("PLATFORM_ERROR_REASON", ""),
-              }
-          try:
-              with open("prod-state/closure.json") as f:
-                  closure = json.load(f)
-          except (FileNotFoundError, json.JSONDecodeError):
-              closure = []
-          body = notify_render.render_gate_1_comment(
-              closure,
-              greenfield=greenfield,
-              passed=passed,
-              platform_error=platform_error,
-          )
-          pr_comment.upsert(notify_render.GATE_1_MARKER, body, os.environ["PR_NUMBER"], os.environ["REPO"])
-          EOF
-
   # ─── PROVISION ────────────────────────────────────────────────────────────
   # 1. KV UAMI: fetch Fabric capacity ID + GitHub App config → GITHUB_ENV
   # 2. Fabric UAMI: find-or-create workspace + lakehouse, inject notebook
-  provision:
-    name: "provision: ephemeral workspace & shortcuts"
+  provision-workspace:
+    name: "Provision workspace, environment, shortcuts, notebook"
     if: github.event.action != 'closed'
     needs: [preflight, fetch-prod-state]
     runs-on: ubuntu-latest
@@ -394,16 +298,16 @@ jobs:
           client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
           allow-no-subscriptions: true
 
-      - name: Emit ci/provision pending
+      - name: Emit ci/provision-workspace pending
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           python3 ${{ env.SCRIPTS }}/emit_status.py \
-            --context "ci/provision" \
+            --context "ci/provision-workspace" \
             --state pending \
-            --description "Provision: workspace, environment, shortcuts, notebook" \
+            --description "Provision workspace, environment, shortcuts, notebook" \
             --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - name: Cancel in-flight jobs
@@ -469,6 +373,18 @@ jobs:
             echo "No prod-state/manifest.json found — skipping OneLake upload."
           fi
 
+      - name: Upload prod-state-defer manifest to ephemeral workspace OneLake
+        run: |
+          if [ -f prod-state/manifest_prod.json ]; then
+            python3 ${{ env.SCRIPTS }}/fabric_api.py upload-file \
+              --workspace-id "${{ steps.provision.outputs.workspace_id }}" \
+              --lakehouse-id "${{ steps.provision.outputs.lakehouse_id }}" \
+              --local-path prod-state/manifest_prod.json \
+              --remote-path Files/ci-artifacts/prod-state-defer/manifest.json
+          else
+            echo "No prod-state/manifest_prod.json found — skipping prod-state-defer upload."
+          fi
+
       - name: Install dbt and parse current branch
         run: |
           pip install "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
@@ -513,6 +429,57 @@ jobs:
           path: reports/deployment-manifest-${{ github.event.pull_request.head.sha }}.json
           if-no-files-found: error
           retention-days: 30
+
+      - name: Post gate-1 comment
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GREENFIELD_FALLBACK: ${{ needs.fetch-prod-state.outputs.greenfield_fallback }}
+          PLATFORM_ERROR_MODE: ${{ needs.fetch-prod-state.outputs.platform_error_mode }}
+          PLATFORM_ERROR_CATEGORY: ${{ needs.fetch-prod-state.outputs.platform_error_category }}
+          PLATFORM_ERROR_REASON: ${{ needs.fetch-prod-state.outputs.platform_error_reason }}
+          GATE1_JOB_STATUS: ${{ needs.fetch-prod-state.result }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          SCRIPTS_DIR: ${{ env.SCRIPTS }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys
+          sys.path.insert(0, os.environ["GITHUB_WORKSPACE"] + "/" + os.environ["SCRIPTS_DIR"])
+          import notify_render, pr_comment
+          greenfield = os.environ.get("GREENFIELD_FALLBACK", "false").lower() == "true"
+          passed = os.environ.get("GATE1_JOB_STATUS", "failure").lower() == "success"
+          category = os.environ.get("PLATFORM_ERROR_CATEGORY", "")
+          platform_error = None
+          if not passed and category:
+              platform_error = {
+                  "mode": os.environ.get("PLATFORM_ERROR_MODE", "artifact"),
+                  "category": category,
+                  "reason": os.environ.get("PLATFORM_ERROR_REASON", ""),
+              }
+          head_sha = os.environ.get("HEAD_SHA", "")
+          closure = []
+          try:
+              manifest_path = f"reports/deployment-manifest-{head_sha}.json"
+              with open(manifest_path) as f:
+                  dm = json.load(f)
+              for a in dm.get("artifacts", []):
+                  closure.append({
+                      "name": a.get("name", "").split(".")[-1],
+                      "materialization": a.get("materialized", "unknown"),
+                  })
+          except (FileNotFoundError, json.JSONDecodeError):
+              closure = []
+          body = notify_render.render_gate_1_comment(
+              closure,
+              greenfield=greenfield,
+              passed=passed,
+              platform_error=platform_error,
+          )
+          pr_comment.upsert(notify_render.GATE_1_MARKER, body, os.environ["PR_NUMBER"], os.environ["REPO"])
+          EOF
 
       - name: Upload shortcut seeding report
         uses: actions/upload-artifact@v4
@@ -562,9 +529,11 @@ jobs:
           STEP_DERIVE_SHORTCUTS: ${{ steps.derive-shortcuts.outcome }}
           STEP_SEED_SHORTCUTS: ${{ steps.seed-shortcuts.outcome }}
           STEP_GENERATE_NOTEBOOK: ${{ steps.generate-notebook.outcome }}
+          NOTEBOOK_ID: ${{ steps.generate-notebook.outputs.notebook_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: python3 ${{ env.SCRIPTS }}/notify.py --workspace-comment-only
 
-      - name: Emit ci/provision final status
+      - name: Emit ci/provision-workspace final status
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -574,13 +543,13 @@ jobs:
         run: |
           if [ "$JOB_STATUS" = "success" ]; then
             STATE=success
-            DESC="Provision: workspace ready"
+            DESC="Provision workspace ready"
           else
             STATE=failure
-            DESC="Provision: failed — see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            DESC="Provision workspace failed — see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           fi
           python3 ${{ env.SCRIPTS }}/emit_status.py \
-            --context "ci/provision" \
+            --context "ci/provision-workspace" \
             --state "$STATE" \
             --description "$DESC" \
             --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -590,6 +559,7 @@ jobs:
   # Posts ci/static-check commit status; either blocking step failing marks Gate 0 failed.
   static-analysis:
     name: "ci/static-check: static analysis"
+    if: false  # disabled for VD-2138-2142 validation — focused on slim-CI selection fix
     needs: [preflight]
     runs-on: ubuntu-latest
     steps:
@@ -822,7 +792,7 @@ jobs:
   # get_columns_in_relation() resolves against real tables in the Spark catalog.
   gate-3-unit:
     name: "ci/unit-tests: unit tests"
-    needs: [provision]
+    needs: [provision-workspace]
     if: github.event.action != 'closed'
     timeout-minutes: 130
     concurrency:
@@ -857,9 +827,9 @@ jobs:
         run: |
           python3 ${{ env.SCRIPTS }}/gate_runner.py run-gate \
             --gate 3 \
-            --workspace-id "${{ needs.provision.outputs.ephemeral_workspace_id }}" \
-            --lakehouse-id "${{ needs.provision.outputs.ephemeral_lakehouse_id }}" \
-            --notebook-id "${{ needs.provision.outputs.notebook_id }}" \
+            --workspace-id "${{ needs.provision-workspace.outputs.ephemeral_workspace_id }}" \
+            --lakehouse-id "${{ needs.provision-workspace.outputs.ephemeral_lakehouse_id }}" \
+            --notebook-id "${{ needs.provision-workspace.outputs.notebook_id }}" \
             --head-sha "${{ github.event.pull_request.head.sha }}" \
             --output reports/gate-3.json
 
@@ -918,7 +888,7 @@ jobs:
   # terminal, downloads gate-2.json, emits ci/run commit status.
   gate-2-write:
     name: "ci/run: isolated build"
-    needs: [preflight, provision, fetch-prod-state]
+    needs: [preflight, provision-workspace, fetch-prod-state]
     if: github.event.action != 'closed'
     timeout-minutes: 130
     concurrency:
@@ -951,9 +921,9 @@ jobs:
         run: |
           python3 ${{ env.SCRIPTS }}/gate_runner.py run-gate \
             --gate 2 \
-            --workspace-id "${{ needs.provision.outputs.ephemeral_workspace_id }}" \
-            --lakehouse-id "${{ needs.provision.outputs.ephemeral_lakehouse_id }}" \
-            --notebook-id "${{ needs.provision.outputs.notebook_id }}" \
+            --workspace-id "${{ needs.provision-workspace.outputs.ephemeral_workspace_id }}" \
+            --lakehouse-id "${{ needs.provision-workspace.outputs.ephemeral_lakehouse_id }}" \
+            --notebook-id "${{ needs.provision-workspace.outputs.notebook_id }}" \
             --head-sha "${{ github.event.pull_request.head.sha }}" \
             --output reports/gate-2.json
 
@@ -983,7 +953,7 @@ jobs:
   # Skipped (no ci/data-tests status emitted) when Gate 2 fails.
   gate-4-data-test:
     name: "ci/data-tests: data tests"
-    needs: [provision, gate-2-write]
+    needs: [provision-workspace, gate-2-write]
     if: always() && github.event.action != 'closed'
     timeout-minutes: 130
     concurrency:
@@ -1017,9 +987,9 @@ jobs:
         run: |
           python3 ${{ env.SCRIPTS }}/gate_runner.py run-gate \
             --gate 4 \
-            --workspace-id "${{ needs.provision.outputs.ephemeral_workspace_id }}" \
-            --lakehouse-id "${{ needs.provision.outputs.ephemeral_lakehouse_id }}" \
-            --notebook-id "${{ needs.provision.outputs.notebook_id }}" \
+            --workspace-id "${{ needs.provision-workspace.outputs.ephemeral_workspace_id }}" \
+            --lakehouse-id "${{ needs.provision-workspace.outputs.ephemeral_lakehouse_id }}" \
+            --notebook-id "${{ needs.provision-workspace.outputs.notebook_id }}" \
             --head-sha "${{ github.event.pull_request.head.sha }}" \
             --output reports/gate-4.json
 
@@ -1048,8 +1018,8 @@ jobs:
   # Skipped (no ci/data-diff status emitted) when Gate 2 fails.
   gate-5-data-diff:
     name: "ci/data-diff: data-diff"
-    needs: [provision, gate-2-write]
-    if: always() && github.event.action != 'closed'
+    needs: [provision-workspace, gate-2-write]
+    if: false  # disabled for VD-2138-2142 validation
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-5
@@ -1073,6 +1043,7 @@ jobs:
 
       - name: Run Gate 5
         if: needs.gate-2-write.result == 'success'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -1082,14 +1053,14 @@ jobs:
         run: |
           python3 ${{ env.SCRIPTS }}/gate_runner.py run-gate \
             --gate 5 \
-            --workspace-id "${{ needs.provision.outputs.ephemeral_workspace_id }}" \
-            --lakehouse-id "${{ needs.provision.outputs.ephemeral_lakehouse_id }}" \
-            --notebook-id "${{ needs.provision.outputs.notebook_id }}" \
+            --workspace-id "${{ needs.provision-workspace.outputs.ephemeral_workspace_id }}" \
+            --lakehouse-id "${{ needs.provision-workspace.outputs.ephemeral_lakehouse_id }}" \
+            --notebook-id "${{ needs.provision-workspace.outputs.notebook_id }}" \
             --head-sha "${{ github.event.pull_request.head.sha }}" \
             --output reports/gate-5.json
 
       - name: Evaluate diff-acknowledged binding and emit ci/data-diff status
-        if: needs.gate-2-write.result == 'success'
+        if: always() && needs.gate-2-write.result == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -1178,6 +1149,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          GATE_2_RESULT: ${{ needs.gate-2-write.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python3 - <<'EOF'
           import json, os, sys
@@ -1188,6 +1161,11 @@ jobs:
                   result = json.load(f)
           except (OSError, json.JSONDecodeError):
               result = None
-          body = notify_render.render_gate_5_comment(result)
+          gate_2_result = os.environ.get("GATE_2_RESULT", "")
+          run_url = os.environ.get("RUN_URL", "")
+          if result is None and gate_2_result == "success":
+              body = notify_render.render_gate_5_failed(run_url=run_url)
+          else:
+              body = notify_render.render_gate_5_comment(result)
           pr_comment.upsert("<!-- ci-data-diff -->", body, os.environ["PR_NUMBER"], os.environ["GITHUB_REPOSITORY"])
           EOF

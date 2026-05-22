@@ -94,7 +94,10 @@ def inject_parameters_cell(notebook: dict, source: list[str]) -> dict:
     """
     nb = copy.deepcopy(notebook)
     for cell in nb.get("cells", []):
-        if cell.get("cell_type") == "code" and any("Parameters" in line for line in cell.get("source", [])):
+        src = cell.get("source", [])
+        if isinstance(src, str):
+            src = src.splitlines(keepends=True)
+        if cell.get("cell_type") == "code" and any("Parameters" in line for line in src):
             cell["source"] = source
             return nb
     # If no Parameters cell found, insert at position 0

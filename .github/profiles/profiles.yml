@@ -34,7 +34,7 @@ dbt_fab_spark:
       reuse_livy_session: true
       session_id_file: "{{ env_var('SESSION_ID_FILE', '') }}"
       spark_config:
-        name: "{{ env_var('SESSION_NAME') }}"
+        name: "dbt_ci_session"
       connect_retries: 2
       connect_timeout: 500
       threads: 10

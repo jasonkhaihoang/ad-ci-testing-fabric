@@ -163,6 +163,10 @@ def fetch_artifact_mode(cfg: dict) -> ArtifactResult:
 
         os.makedirs("prod-state", exist_ok=True)
         shutil.copy2(manifest_src, "prod-state/manifest.json")
+        # Also copy prod-target manifest for --defer resolution in gates 2/4 (VD-2142).
+        manifest_prod_src = os.path.join(tmpdir, "manifest_prod.json")
+        if os.path.exists(manifest_prod_src):
+            shutil.copy2(manifest_prod_src, "prod-state/manifest_prod.json")
 
     write_source_json(
         mode="artifact",

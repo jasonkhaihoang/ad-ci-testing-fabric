@@ -66,14 +66,23 @@ jobs:
           print(f"prod_manifest target: {profile_name} → {workspace_name}.{lakehouse}.{schema}", flush=True)
           PYEOF
 
-      - name: Parse dbt project
+      - name: Parse dbt project — compile target
         run: |
           dbt deps --quiet
+          dbt parse --profiles-dir .github/profiles --target dbt_fabric_compile --quiet
+          mkdir -p /tmp/prod-manifests
+          cp target/manifest.json /tmp/prod-manifests/manifest.json
+
+      - name: Parse dbt project — prod target
+        run: |
           dbt parse --profiles-dir /tmp/prod-profiles --target prod_manifest --quiet
+          cp target/manifest.json /tmp/prod-manifests/manifest_prod.json
 
       - name: Upload prod-manifest artifact
         uses: actions/upload-artifact@v4
         with:
           name: prod-manifest
-          path: target/manifest.json
+          path: |
+            /tmp/prod-manifests/manifest.json
+            /tmp/prod-manifests/manifest_prod.json
           retention-days: 90

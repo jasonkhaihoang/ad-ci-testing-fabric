@@ -309,6 +309,9 @@ def cmd_run_gate(args):
         overall_status = result.get("overall_status", "fail")
         item_count = len(result.get("artifacts") or [])
         item_label = "artifact(s)"
+        if "latest_hash" not in result:
+            import label_binding
+            result["latest_hash"] = label_binding.compute_diff_hash(result.get("artifacts") or [])
     elif gate == "2":
         overall_status = result.get("overall_status", "fail")
         models = (result.get("build") or {}).get("models") or []
