@@ -27,7 +27,7 @@ prod_manifest_source:
   mode: artifact
   workflow: publish-prod-manifest.yml
   artifact_name: prod-manifest
-  main_branch: test/vd-2138-2142-bundle-deploy  # temp: points at bundle-deploy branch for VD-2138 baseline validation
+  main_branch: main
 
 #   # onelake mode (future — post-CD, see design doc §4.5 ADR):
 #   # workspace_id: <prod-ws-guid>    # production Fabric workspace ID
