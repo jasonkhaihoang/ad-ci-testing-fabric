@@ -10,25 +10,30 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import subprocess
 import sys
 
 
 def emit_status(repo: str, sha: str, context: str, state: str, description: str, target_url: str) -> None:
+    payload = json.dumps({
+        "state": state,
+        "context": context,
+        "description": description[:140],
+        "target_url": target_url,
+    })
     result = subprocess.run(
         [
             "gh", "api", "--method", "POST",
             f"repos/{repo}/statuses/{sha}",
-            "--field", f"state={state}",
-            "--field", f"context={context}",
-            "--field", f"description={description[:140]}",
-            "--field", f"target_url={target_url}",
+            "--input", "-",
         ],
+        input=payload,
         capture_output=True, text=True,
     )
     if result.returncode != 0:
-        print(f"Failed to post commit status: {result.stderr}", file=sys.stderr)
+        print(f"Failed to post commit status: {result.stdout} {result.stderr}", file=sys.stderr)
         sys.exit(1)
 
 

@@ -49,7 +49,7 @@ jobs:
           python3 - <<'EOF'
           import os, subprocess, sys, tempfile
           sys.path.insert(0, ".github/scripts")
-          import pr_comment, emit_status, label_binding
+          import pr_comment, emit_status, label_binding, notify_render
 
           repo = os.environ["GITHUB_REPOSITORY"]
           sha = os.environ["GITHUB_SHA"]
@@ -84,6 +84,16 @@ jobs:
           elif action == "bind":
               new_body = label_binding.write_marker(decision["hash"], bound_hash=decision["hash"])
               pr_comment.upsert(label_binding.MARKER, new_body, pr_number, repo)
+              gate5_id = pr_comment.find_by_marker(notify_render.GATE_5_MARKER, pr_number, repo)
+              if gate5_id:
+                  res = subprocess.run(
+                      ["gh", "api", f"repos/{repo}/issues/comments/{gate5_id}", "--jq", ".body"],
+                      capture_output=True, text=True,
+                  )
+                  gate5_body = res.stdout.strip()
+                  if gate5_body:
+                      new_gate5 = notify_render.toggle_gate_5_ack(gate5_body, ack_active=True)
+                      pr_comment.upsert(notify_render.GATE_5_MARKER, new_gate5, pr_number, repo)
               emit_status.emit_status(repo, sha, "ci/data-diff", "success",
                                      "Gate 5: diff acknowledged", run_url)
 
@@ -108,6 +118,16 @@ jobs:
               if existing_body:
                   new_body = label_binding.delete_bound(existing_body)
                   pr_comment.upsert(label_binding.MARKER, new_body, pr_number, repo)
+              gate5_id = pr_comment.find_by_marker(notify_render.GATE_5_MARKER, pr_number, repo)
+              if gate5_id:
+                  res = subprocess.run(
+                      ["gh", "api", f"repos/{repo}/issues/comments/{gate5_id}", "--jq", ".body"],
+                      capture_output=True, text=True,
+                  )
+                  gate5_body = res.stdout.strip()
+                  if gate5_body:
+                      new_gate5 = notify_render.toggle_gate_5_ack(gate5_body, ack_active=False)
+                      pr_comment.upsert(notify_render.GATE_5_MARKER, new_gate5, pr_number, repo)
               emit_status.emit_status(repo, sha, "ci/data-diff", "failure",
                                      "Gate 5: diff-acknowledged label removed", run_url)
           EOF
