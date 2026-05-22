@@ -36,7 +36,10 @@ renamed as (
 
         -- Audit fields
         lastmodifieddate as last_modified_date,
-        systemmodstamp as system_modified_timestamp
+        systemmodstamp as system_modified_timestamp,
+
+        -- VD-2136: schema delta marker to trigger Gate 5 non-empty diff
+        true as is_vd2136_validation
 
     from source
     where isdeleted = false  -- Exclude soft-deleted records
