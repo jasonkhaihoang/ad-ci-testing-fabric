@@ -1,8 +1,8 @@
 """
 GitHub commit status emitter.
 
-Posts a commit status to the GitHub Statuses API via gh CLI.
-Reads GITHUB_REPOSITORY and GITHUB_SHA from environment.
+Posts a commit status to the GitHub Statuses API via urllib.
+Reads GITHUB_REPOSITORY, GITHUB_SHA, and GH_TOKEN (or GITHUB_TOKEN) from environment.
 
 Usage:
     emit_status.py --context ci/static-check --state pending \
@@ -12,28 +12,38 @@ Usage:
 import argparse
 import json
 import os
-import subprocess
 import sys
+import urllib.error
+import urllib.request
 
 
 def emit_status(repo: str, sha: str, context: str, state: str, description: str, target_url: str) -> None:
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
     payload = json.dumps({
         "state": state,
         "context": context,
         "description": description[:140],
         "target_url": target_url,
-    })
-    result = subprocess.run(
-        [
-            "gh", "api", "--method", "POST",
-            f"repos/{repo}/statuses/{sha}",
-            "--input", "-",
-        ],
-        input=payload,
-        capture_output=True, text=True,
+    }).encode()
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{repo}/statuses/{sha}",
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+            "Content-Type": "application/json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
     )
-    if result.returncode != 0:
-        print(f"Failed to post commit status: {result.stdout} {result.stderr}", file=sys.stderr)
+    try:
+        with urllib.request.urlopen(req) as resp:
+            if resp.status not in (200, 201):
+                print(f"Unexpected HTTP {resp.status} posting commit status", file=sys.stderr)
+                sys.exit(1)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        print(f"Failed to post commit status: HTTP {e.code} — {body}", file=sys.stderr)
         sys.exit(1)
 
 
