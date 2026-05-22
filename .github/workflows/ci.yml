@@ -1019,7 +1019,7 @@ jobs:
   gate-5-data-diff:
     name: "ci/data-diff: data-diff"
     needs: [provision-workspace, gate-2-write]
-    if: false  # disabled for VD-2138-2142 validation
+    if: always() && github.event.action != 'closed'
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-5
