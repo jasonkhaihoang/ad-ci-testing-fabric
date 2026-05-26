@@ -18,7 +18,7 @@ Public surface:
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 _RUNNER_PREFIX_RE = re.compile(r"^/home/runner/work/[^/]+/[^/]+/")
 
@@ -29,6 +29,15 @@ DETAILS_COMMENT_MARKER = "<!-- static-analysis-details -->"
 
 _VIOLATION_CAP = 20
 _GATE4_FAILING_CAP = 10
+_PREFLIGHT_MSG_MAX = 300
+
+
+def _sanitize_table_cell(text: str, max_len: int = _PREFLIGHT_MSG_MAX) -> str:
+    """Truncate and strip markdown-breaking characters for use in a table cell."""
+    sanitized = text.replace("\n", " ").replace("|", "｜")
+    if len(sanitized) > max_len:
+        sanitized = sanitized[:max_len] + "…"
+    return sanitized
 
 
 @dataclass
@@ -71,11 +80,25 @@ def _format_naming_violations_table(violations: list) -> str:
 
 # ─── per-tool renderers ───────────────────────────────────────────────────────
 
-def render_ruff(report) -> tuple[bool, str]:
+def _passed_section(name: str, message: str) -> str:
+    return f"#### {name}\n\n✅ {message}\n"
+
+
+def _failed_section(name: str, summary_line: str, details: str, collapsible_summary: str) -> str:
+    return (
+        f"#### {name}\n\n"
+        f"{summary_line}\n\n"
+        f"<details>\n<summary>{collapsible_summary}</summary>\n\n"
+        f"{details}\n\n"
+        f"</details>\n"
+    )
+
+
+def _section_ruff(report) -> tuple[bool, str]:
     issues = report if isinstance(report, list) else []
     count = len(issues)
     if count == 0:
-        return True, "#### Ruff\n\n✅ No issues\n"
+        return True, _passed_section("Ruff", "No issues")
     sorted_issues = sorted(issues, key=lambda x: x.get("filename", ""))
     lines = [
         f"- `{_strip_runner_prefix(item.get('filename', 'unknown'))}` — `{item.get('code', 'unknown')}` {item.get('message', '')}"
@@ -85,19 +108,12 @@ def render_ruff(report) -> tuple[bool, str]:
     detail = "\n".join(lines)
     if remainder:
         detail += f"\n\n_…and {remainder} more_"
-    section = (
-        f"#### Ruff\n\n"
-        f"❌ {count} issue(s)\n\n"
-        f"<details>\n<summary>Violations</summary>\n\n"
-        f"{detail}\n\n"
-        f"</details>\n"
-    )
-    return False, section
+    return False, _failed_section("Ruff", f"❌ {count} issue(s)", detail, "Violations")
 
 
-def render_sqlfluff(report) -> tuple[bool, str]:
+def _section_sqlfluff(report) -> tuple[bool, str]:
     if report is None:
-        return True, "#### SQLFluff\n\n✅ No violations\n"
+        return True, _passed_section("SQLFluff", "No violations")
     file_results = report if isinstance(report, list) else report.get("files", [])
     file_counts: dict[str, int] = {}
     total = 0
@@ -108,28 +124,21 @@ def render_sqlfluff(report) -> tuple[bool, str]:
             file_counts[filepath] = n
             total += n
     if total == 0:
-        return True, "#### SQLFluff\n\n✅ No violations\n"
+        return True, _passed_section("SQLFluff", "No violations")
     lines = "\n".join(
         f"- `{fp}` — {n} violation(s)"
         for fp, n in sorted(file_counts.items())
     )
-    section = (
-        f"#### SQLFluff\n\n"
-        f"❌ {total} violation(s)\n\n"
-        f"<details>\n<summary>Per-file breakdown</summary>\n\n"
-        f"{lines}\n\n"
-        f"</details>\n"
-    )
-    return False, section
+    return False, _failed_section("SQLFluff", f"❌ {total} violation(s)", lines, "Per-file breakdown")
 
 
-def render_gitleaks(report) -> tuple[bool, str]:
+def _section_gitleaks(report) -> tuple[bool, str]:
     if report is None:
-        return True, "#### Gitleaks\n\n✅ No secrets found\n"
+        return True, _passed_section("Gitleaks", "No secrets found")
     findings = report if isinstance(report, list) else report.get("findings", [])
     count = len(findings)
     if count == 0:
-        return True, "#### Gitleaks\n\n✅ No secrets found\n"
+        return True, _passed_section("Gitleaks", "No secrets found")
     lines = []
     for finding in findings:
         secret_type = finding.get("RuleID") or finding.get("Description", "unknown")
@@ -137,17 +146,10 @@ def render_gitleaks(report) -> tuple[bool, str]:
         line_num = finding.get("StartLine", "?")
         lines.append(f"- `{secret_type}` in `{file_path}` line {line_num}")
     detail = "\n".join(lines)
-    section = (
-        f"#### Gitleaks\n\n"
-        f"❌ **{count} secret(s) found — BLOCK**\n\n"
-        f"<details>\n<summary>Findings (type · file · line)</summary>\n\n"
-        f"{detail}\n\n"
-        f"</details>\n"
-    )
-    return False, section
+    return False, _failed_section("Gitleaks", f"❌ **{count} secret(s) found — BLOCK**", detail, "Findings (type · file · line)")
 
 
-def render_scorecard(report) -> tuple[bool, str]:
+def _section_scorecard(report) -> tuple[bool, str]:
     if not report:
         return False, "#### dbt Scorecard\n\n⚠️ Scorecard unavailable — `dbt parse` may have failed.\n"
     desc = report.get("description_coverage_pct", 0)
@@ -173,8 +175,10 @@ def render_scorecard(report) -> tuple[bool, str]:
     return section_passed, section
 
 
-def render_gate_0(compile_result: dict, schema_gate: dict, *, extra_rows: str = "") -> tuple[bool, str]:
-    def _check_ok(report: dict) -> bool | None:
+def render_gate_0(compile_result: dict | None, schema_gate: dict, *, extra_rows: str = "") -> tuple[bool, str]:
+    def _check_ok(report: dict | None) -> bool | None:
+        if report is None:
+            return False
         if not report:
             return None
         return bool(report.get("passed"))
@@ -196,7 +200,9 @@ def render_gate_0(compile_result: dict, schema_gate: dict, *, extra_rows: str = 
         evaluated = schema_gate.get("models_evaluated", 0)
         sg_cell = f"❌ {len(violations)} violation(s)"
 
-    def _cell(report: dict, detail_fn) -> str:
+    def _cell(report: dict | None, detail_fn) -> str:
+        if report is None:
+            return "❌ Report missing — see workflow logs"
         if not report:
             return "⚠️ Unavailable"
         return f"{_icon(bool(report.get('passed')))} {detail_fn(report)}"
@@ -230,7 +236,19 @@ def render_gate_3(summary: dict) -> tuple[bool, str]:
     f = counts.get("fail", 0)
     e = counts.get("error", 0)
     s = counts.get("skip", 0)
-    overall = summary.get("overall_status", "pass")
+    overall = summary.get("overall_status", "fail")
+
+    session_error = summary.get("session_error")
+    if overall == "error" or session_error:
+        cause = session_error or "Session error"
+        return (
+            False,
+            f"## Unit Tests (ci/unit-tests) ❌\n\n"
+            f"**Session error** — Gate 3 could not run.\n\n"
+            f"> {cause}\n\n"
+            "Re-run the `ci/unit-tests` job to retry.\n",
+        )
+
     passed = overall == "pass"
 
     summary_line = f"{p} passed / {f} failed / {e} errored / {s} skipped"
@@ -336,6 +354,17 @@ def render_gate_2(result: dict | None) -> str:
         return ""
     overall = result.get("overall_status", "")
     passed = overall == "pass"
+
+    session_error = result.get("session_error")
+    if overall == "error" or session_error:
+        cause = session_error or result.get("error") or "Session error"
+        return (
+            f"## Isolated Build (ci/run) ❌\n\n"
+            f"**Session error** — Gate 2 could not run.\n\n"
+            f"> {cause}\n\n"
+            "Re-run the `ci/run` job to retry.\n"
+        )
+
     head_sha = result.get("head_sha", "")
 
     clone = result.get("clone") or {}
@@ -358,7 +387,10 @@ def render_gate_2(result: dict | None) -> str:
 
     head = f"## Isolated Build (ci/run) {_icon(passed)}\n\n{summary_line}\n"
 
+    error = result.get("error") or ""
     sections = [head]
+    if error:
+        sections.append(f"\n> ⚠️ **Abort**: {error[:500]}\n")
     for step_label, step_status, step_models in [
         ("Clone", clone_status, clone_models),
         ("Build", build_status, build_models),
@@ -404,6 +436,17 @@ def render_gate_4(result: dict | None) -> str:
         return ""
     overall = result.get("overall_status", "")
     passed = overall == "pass"
+
+    session_error = result.get("session_error")
+    if overall == "error" or session_error:
+        cause = session_error or result.get("error") or "Session error"
+        return (
+            f"## Data Tests (ci/data-tests) ❌\n\n"
+            f"**Session error** — Gate 4 could not run.\n\n"
+            f"> {cause}\n\n"
+            "Re-run the `ci/data-tests` job to retry.\n"
+        )
+
     tests = result.get("tests") or []
     store_failures_config_ok = result.get("store_failures_config_ok", True)
     passing = [t for t in tests if t.get("status") in ("pass",)]
@@ -481,6 +524,24 @@ def render_gate_5(result: dict | None) -> str:
     existing = [a for a in artifacts if a.get("baseline") is not None and not a.get("error")]
 
     head = f"## Data-Diff vs Prod (ci/data-diff) {_icon(passed)}\n\n"
+
+    session_error = result.get("session_error")
+    if session_error:
+        return (
+            head
+            + "**Session error** — Gate 5 could not start a Livy session.\n\n"
+            + f"> {session_error}\n\n"
+            + "Re-run the `ci/data-diff` job to retry.\n"
+        )
+
+    if overall == "error":
+        cause = result.get("error") or "Gate 5 could not complete"
+        return (
+            head
+            + "**Error** — Gate 5 could not complete.\n\n"
+            + f"> {cause}\n\n"
+            + "Re-run the `ci/data-diff` job to retry.\n"
+        )
 
     if not artifacts:
         return head + "_No artifacts in diff scope._\n"
@@ -634,6 +695,8 @@ def _detail_scorecard(report: dict) -> str:
 
 
 def _detail_compile(report: dict | None) -> str:
+    if report is None:
+        return "Report missing — see workflow logs"
     if not report:
         return "⚠️ Unavailable"
     if report.get("passed"):
@@ -774,6 +837,32 @@ def _collapsible_schema_gate(report: dict | None) -> str:
     )
 
 
+@dataclass(frozen=True)
+class _ToolRenderer:
+    name: str
+    section_fn: Callable[[Any], tuple[bool, str]]
+    detail_fn: Callable[[Any], str]
+    collapsible_fn: Callable[[Any], str]
+
+
+_TOOL_RENDERERS: dict[str, "_ToolRenderer"] = {
+    "ruff":      _ToolRenderer("Ruff",          _section_ruff,      _detail_ruff,      _collapsible_ruff),
+    "sqlfluff":  _ToolRenderer("SQLFluff",      _section_sqlfluff,  _detail_sqlfluff,  _collapsible_sqlfluff),
+    "gitleaks":  _ToolRenderer("Gitleaks",      _section_gitleaks,  _detail_gitleaks,  _collapsible_gitleaks),
+    "scorecard": _ToolRenderer("dbt Scorecard", _section_scorecard, _detail_scorecard, _collapsible_scorecard),
+}
+
+_STATIC_ANALYSIS_TOOL_IDS = ("ruff", "sqlfluff", "gitleaks", "scorecard")
+
+
+# ─── public per-tool shims (preserve notify.py import surface) ────────────────
+
+render_ruff = _section_ruff
+render_sqlfluff = _section_sqlfluff
+render_gitleaks = _section_gitleaks
+render_scorecard = _section_scorecard
+
+
 def _has_schema_diff(schema_delta: dict) -> bool:
     return any(
         schema_delta.get(k)
@@ -907,7 +996,7 @@ def render_workspace_comment(
 - [ ] Open the workspace and run these notebook cells in order:
   1. **Clone** — shallow-clones prod tables into the ephemeral lakehouse
   2. **Run** — `dbt run --select state:modified+` (writes the modified set)
-  3. **Unit Test** — `dbt test --select state:modified+,test_type:unit` against `_empty_build`
+  3. **Unit Test** — `dbt test --select state:modified+,test_type:unit` (after Run — uses tables built in step 2)
   4. **Data Test** — `dbt test --select state:modified+ --store-failures`
 - [ ] Note: `ci/data-diff` runs automatically in CI — no manual cell required
 - [ ] Validate results meet the intent spec acceptance criteria
@@ -961,6 +1050,7 @@ def render_gate_0_comment(
     gitleaks=None,
     scorecard=None,
     shortcut_seeding=None,
+    run_url: str = "",
 ) -> str:
     has_gate_0 = bool(compile_result or schema_gate)
     has_tools = any(x is not None for x in [ruff, sqlfluff, gitleaks, scorecard, shortcut_seeding])
@@ -972,21 +1062,22 @@ def render_gate_0_comment(
     tool_table_rows = ""
     tool_parts = []
     tool_passed_flags = []
-    for value, renderer, detail_fn, label in [
-        (ruff,      render_ruff,      _detail_ruff,      "Ruff"),
-        (sqlfluff,  render_sqlfluff,  _detail_sqlfluff,  "SQLFluff"),
-        (gitleaks,  render_gitleaks,  _detail_gitleaks,  "Gitleaks"),
-        (scorecard, render_scorecard, _detail_scorecard, "dbt Scorecard"),
-    ]:
-        if value is not None:
-            tool_passed, tool_section = renderer(value)
-            tool_passed_flags.append(tool_passed)
-            tool_table_rows += f"| {label} | {_icon(tool_passed)} {detail_fn(value)} |\n"
-            if not tool_passed:
-                tool_parts.append(tool_section)
+    tool_inputs = {"ruff": ruff, "sqlfluff": sqlfluff, "gitleaks": gitleaks, "scorecard": scorecard}
+    for tool_id in _STATIC_ANALYSIS_TOOL_IDS:
+        value = tool_inputs[tool_id]
+        if value is None:
+            continue
+        cfg = _TOOL_RENDERERS[tool_id]
+        tool_passed, tool_section = cfg.section_fn(value)
+        if tool_id == "scorecard" and not value and run_url:
+            tool_section = tool_section.rstrip("\n") + f" [See workflow logs]({run_url})\n"
+        tool_passed_flags.append(tool_passed)
+        tool_table_rows += f"| {cfg.name} | {_icon(tool_passed)} {cfg.detail_fn(value)} |\n"
+        if not tool_passed:
+            tool_parts.append(tool_section)
 
     gate_0_passed, section = render_gate_0(
-        compile_result or {},
+        compile_result,
         schema_gate or {},
         extra_rows=tool_table_rows,
     )
@@ -1021,6 +1112,11 @@ def render_gate_1_comment(
     Mode / Category / Reason triple plus a remediation footer that tells the
     operator to re-run the job or push a new commit. `platform_error` keys:
     `mode`, `category`, `reason`.
+
+    When closure items carry `closure_source` ('modified' | 'descendant'), a
+    Closure column is added and rows are sorted roots-first (alpha), then
+    descendants (alpha). Greenfield path and items lacking closure_source are
+    unchanged (no Closure column).
     """
     icon = _icon(passed)
     heading = f"## Compile-time Logic (ci/state-modified+) {icon}"
@@ -1056,11 +1152,41 @@ def render_gate_1_comment(
     if not closure:
         return f"{GATE_1_MARKER}\n{heading}\n\n{mode_line}\n_No modified models in scope._\n"
 
-    rows = "\n".join(
-        f"| `{item['name']}` | `{item['materialization']}` |"
-        for item in closure
+    has_closure_source = any("closure_source" in item for item in closure)
+
+    if greenfield or not has_closure_source:
+        rows = "\n".join(
+            f"| `{item['name']}` | `{item['materialization']}` |"
+            for item in closure
+        )
+        table = "| Model | Materialization |\n|-------|----------------|\n" + rows + "\n"
+        note = "_Project-owned models only — dbt package models (e.g. Elementary) are excluded._\n"
+        return f"{GATE_1_MARKER}\n{heading}\n\n{mode_line}\n{table}\n{note}"
+
+    roots = sorted(
+        [item for item in closure if item.get("closure_source") == "modified"],
+        key=lambda x: x["name"],
     )
-    table = "| Model | Materialization |\n|-------|----------------|\n" + rows + "\n"
+    descendants = sorted(
+        [item for item in closure if item.get("closure_source") != "modified"],
+        key=lambda x: x["name"],
+    )
+
+    def _closure_label(item: dict) -> str:
+        if item.get("closure_source") == "modified":
+            return "state:modified (root)"
+        return "state:modified+ (descendant)"
+
+    rows = "\n".join(
+        f"| `{item['name']}` | `{item['materialization']}` | {_closure_label(item)} |"
+        for item in roots + descendants
+    )
+    table = (
+        "| Model | Materialization | Closure |\n"
+        "|-------|----------------|--------|\n"
+        + rows
+        + "\n"
+    )
     note = "_Project-owned models only — dbt package models (e.g. Elementary) are excluded._\n"
     return f"{GATE_1_MARKER}\n{heading}\n\n{mode_line}\n{table}\n{note}"
 
@@ -1213,7 +1339,7 @@ def render_preflight_comment(result: dict | None) -> str:
     if ci_status == "skipped":
         ci_detail = f"⏭ skipped — {ci.get('message', 'previous step failed')}"
     else:
-        ci_detail = ci.get("message", "")
+        ci_detail = _sanitize_table_cell(ci.get("message", ""))
         if ci.get("line_number"):
             ci_detail = f"{ci_detail} (line {ci['line_number']})"
         missing = ci.get("missing_keys") or []
@@ -1258,28 +1384,24 @@ def render_preflight_comment(result: dict | None) -> str:
 
 
 def render_details_comment(bundle: ReportBundle) -> str:
-    ruff = bundle.ruff if bundle.ruff is not None else []
-    sqlfluff = bundle.sqlfluff if bundle.sqlfluff is not None else {}
-    gitleaks = bundle.gitleaks if bundle.gitleaks is not None else {}
-    scorecard = bundle.scorecard if bundle.scorecard is not None else {}
-
-    ruff_passed, _ = render_ruff(ruff)
-    sql_passed, _ = render_sqlfluff(sqlfluff)
-    gl_passed, _ = render_gitleaks(gitleaks)
-    sc_passed, _ = render_scorecard(scorecard)
+    tool_inputs: dict[str, Any] = {
+        "ruff":      bundle.ruff if bundle.ruff is not None else [],
+        "sqlfluff":  bundle.sqlfluff if bundle.sqlfluff is not None else {},
+        "gitleaks":  bundle.gitleaks if bundle.gitleaks is not None else {},
+        "scorecard": bundle.scorecard if bundle.scorecard is not None else {},
+    }
 
     has_gate_0 = bool(bundle.compile_result or bundle.schema_gate)
     gate_0_passed = True
     if has_gate_0:
         gate_0_passed, _ = render_gate_0(
-            bundle.compile_result or {},
+            bundle.compile_result,
             bundle.schema_gate or {},
         )
 
-    overall_passed = ruff_passed and sql_passed and gl_passed and sc_passed and gate_0_passed
-    overall_icon = _icon(overall_passed)
-
     def _status(report) -> str:
+        if report is None:
+            return "❌"
         if not report:
             return "⚠️"
         return _icon(bool(report.get("passed")))
@@ -1290,12 +1412,18 @@ def render_details_comment(bundle: ReportBundle) -> str:
             f"| dbt compile | {_status(bundle.compile_result)} | {_detail_compile(bundle.compile_result)} |\n"
             f"| Schema gate | {_status(bundle.schema_gate)} | {_detail_schema_gate(bundle.schema_gate)} |\n"
         )
-    table += (
-        f"| ruff | {_icon(ruff_passed)} | {_detail_ruff(ruff)} |\n"
-        f"| sqlfluff | {_icon(sql_passed)} | {_detail_sqlfluff(sqlfluff)} |\n"
-        f"| gitleaks | {_icon(gl_passed)} | {_detail_gitleaks(gitleaks)} |\n"
-        f"| dbt Scorecard | {_icon(sc_passed)} | {_detail_scorecard(scorecard)} |\n"
-    )
+
+    tool_passed_flags: list[bool] = []
+    for tool_id in _STATIC_ANALYSIS_TOOL_IDS:
+        value = tool_inputs[tool_id]
+        cfg = _TOOL_RENDERERS[tool_id]
+        tool_passed, _ = cfg.section_fn(value)
+        tool_passed_flags.append(tool_passed)
+        label = cfg.name if tool_id == "scorecard" else tool_id
+        table += f"| {label} | {_icon(tool_passed)} | {cfg.detail_fn(value)} |\n"
+
+    overall_passed = gate_0_passed and all(tool_passed_flags)
+    overall_icon = _icon(overall_passed)
 
     parts = [
         f"{DETAILS_COMMENT_MARKER}\n"
@@ -1303,16 +1431,20 @@ def render_details_comment(bundle: ReportBundle) -> str:
         f"{table}\n"
     ]
 
-    for collapsible in [
-        _collapsible_compile(bundle.compile_result) if has_gate_0 else "",
-        _collapsible_ruff(ruff),
-        _collapsible_sqlfluff(sqlfluff),
-        _collapsible_gitleaks(gitleaks),
-        _collapsible_scorecard(scorecard),
-        _collapsible_schema_gate(bundle.schema_gate) if has_gate_0 else "",
-    ]:
-        if collapsible:
-            parts.append(collapsible + "\n")
+    if has_gate_0:
+        c = _collapsible_compile(bundle.compile_result)
+        if c:
+            parts.append(c + "\n")
+
+    for tool_id in _STATIC_ANALYSIS_TOOL_IDS:
+        c = _TOOL_RENDERERS[tool_id].collapsible_fn(tool_inputs[tool_id])
+        if c:
+            parts.append(c + "\n")
+
+    if has_gate_0:
+        c = _collapsible_schema_gate(bundle.schema_gate)
+        if c:
+            parts.append(c + "\n")
 
     shortcut_section = _render_shortcut_seeding(bundle.shortcut_seeding)
     if shortcut_section:

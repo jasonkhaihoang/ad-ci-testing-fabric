@@ -13,27 +13,19 @@ import re
 import subprocess
 import sys
 
+import parse_run_results as prr
+
 # Matches: "Compilation Error in model my_model (path/to/model.sql)"
 # Also handles dbt log-prefixed lines like "16:04:22  Compilation Error in model …"
 _COMPILE_ERROR_RE = re.compile(r"Compilation Error in model (\S+)")
 
 
-def parse_run_results(run_results_path: str = "target/run_results.json") -> list[dict]:
-    """Parse dbt run_results.json and return [{model, message}] for failed nodes."""
-    try:
-        with open(run_results_path) as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
-
-    errors = []
-    for result in data.get("results", []):
-        if result.get("status") in ("error", "fail"):
-            uid = result.get("unique_id", "")
-            model = uid.split(".")[-1] if uid else uid
-            msg = (result.get("message") or "").strip()
-            errors.append({"model": model, "message": msg})
-    return errors
+def _extract_errors_from_summary(failures: list) -> list[dict]:
+    """Map parse_run_results failure dicts to [{model, message}] for the error report."""
+    return [
+        {"model": f["name"].split(".")[-1], "message": f["message"]}
+        for f in failures
+    ]
 
 
 def parse_output_errors(output: str) -> list[dict]:
@@ -47,7 +39,6 @@ def parse_output_errors(output: str) -> list[dict]:
         m = _COMPILE_ERROR_RE.search(line)
         if m:
             model = m.group(1).rstrip("(")
-            # Collect indented lines that follow as the error message
             msg_lines = []
             for subsequent in lines[i + 1:]:
                 stripped = subsequent.strip()
@@ -71,7 +62,6 @@ def main() -> None:
 
     proc = subprocess.run(["dbt"] + dbt_args, capture_output=True, text=True)
 
-    # Always surface dbt output in CI logs; on failure emit to stderr for visibility
     if proc.stdout:
         print(proc.stdout, end="")
     if proc.stderr:
@@ -81,9 +71,14 @@ def main() -> None:
     if passed:
         errors = []
     else:
-        errors = parse_run_results()
+        try:
+            with open("target/run_results.json") as f:
+                data = json.load(f)
+            summary = prr.summarize(data)
+            errors = _extract_errors_from_summary(summary["failures"])
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            errors = []
         if not errors:
-            # run_results.json had no error entries — fall back to parsing text output
             errors = parse_output_errors(proc.stdout + proc.stderr)
 
     pathlib.Path(report_path).parent.mkdir(parents=True, exist_ok=True)

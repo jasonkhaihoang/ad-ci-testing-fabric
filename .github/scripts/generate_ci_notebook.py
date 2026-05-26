@@ -292,7 +292,9 @@ def main(template_path: Path | None = None) -> None:
         interactive = json.load(f)
     interactive = inject_parameters_cell(interactive, params_source)
     interactive = patch_lakehouse_metadata(interactive, lakehouse_id, lakehouse_name, workspace_id)
-    upload_notebook(workspace_id, "ci-interactive-notebook", interactive)
+    interactive_id = upload_notebook(workspace_id, "ci-interactive-notebook", interactive)
+    if interactive_id:
+        runner_io.set_output("interactive_notebook_id", interactive_id)
 
 
 if __name__ == "__main__":

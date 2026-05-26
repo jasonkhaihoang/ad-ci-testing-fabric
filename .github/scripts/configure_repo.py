@@ -20,7 +20,7 @@ def build_payload() -> dict:
             "strict": True,
             "contexts": [
                 "ci/preflight",
-                "ci/provision-workspace",
+                "ci/provision",
                 "ci/static-check",
                 "ci/state-modified+",
                 "ci/run",

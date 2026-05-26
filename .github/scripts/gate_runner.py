@@ -140,35 +140,6 @@ def _post_github_status(repo: str, sha: str, context: str, state: str, descripti
         raise
 
 
-def _trigger_notebook_job(workspace_id: str, notebook_id: str, body: dict, token: str) -> str:
-    """POST to Item Jobs API; return the job instance ID."""
-    url = f"{FABRIC_API}/workspaces/{workspace_id}/items/{notebook_id}/jobs/instances?jobType=RunNotebook"
-    data = json.dumps(body).encode()
-    req = urllib.request.Request(url, data=data, method="POST")
-    req.add_header("Authorization", f"Bearer {token}")
-    req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req) as resp:
-            raw = resp.read()
-            parsed = json.loads(raw) if raw else {}
-            job_id = parsed.get("id") or parsed.get("jobInstanceId")
-            if not job_id:
-                # Try Location header convention for 202 responses
-                raise RuntimeError(f"No job ID in response: {parsed}")
-            return job_id
-    except urllib.error.HTTPError as e:
-        body_text = e.read().decode(errors="replace")
-        # 202 Accepted — parse Location header for job ID
-        if e.code == 202:
-            location = e.headers.get("Location", "")
-            # Location: .../jobs/instances/{job_id}
-            job_id = location.rstrip("/").split("/")[-1]
-            if job_id:
-                return job_id
-        print(f"HTTP {e.code} triggering notebook job: {body_text}", file=sys.stderr)
-        raise
-
-
 def _trigger_notebook_job_v2(workspace_id: str, notebook_id: str, body: dict, token: str) -> str:
     """POST to Item Jobs API; handle 202 Accepted with Location header."""
     url = f"{FABRIC_API}/workspaces/{workspace_id}/items/{notebook_id}/jobs/instances?jobType=RunNotebook"
@@ -248,6 +219,8 @@ def cmd_run_gate(args):
     context = _GATE_CONTEXTS[int(gate)]
 
     # Emit pending
+    no_emit_final = args.no_emit_final
+
     if repo and gh_token:
         _post_github_status(repo, head_sha, context, "pending", f"Gate {gate}: notebook running", run_url, gh_token)
         print(f"Posted {context} pending.", flush=True)
@@ -267,9 +240,8 @@ def cmd_run_gate(args):
     print(f"Job terminal status: {terminal_status}", flush=True)
 
     if terminal_status != "Completed":
-        gh_state = "failure"
-        if repo and gh_token:
-            _post_github_status(repo, head_sha, context, gh_state, f"Gate {gate}: job {terminal_status}", run_url, gh_token)
+        if repo and gh_token and not no_emit_final:
+            _post_github_status(repo, head_sha, context, "failure", f"Gate {gate}: job {terminal_status}", run_url, gh_token)
         print(f"Gate {gate} failed: job status {terminal_status}", file=sys.stderr)
         sys.exit(1)
 
@@ -289,7 +261,7 @@ def cmd_run_gate(args):
     try:
         result = _download_gate_result(workspace_id, lakehouse_id, head_sha, gate, storage_token)
     except urllib.error.HTTPError as e:
-        if repo and gh_token:
+        if repo and gh_token and not no_emit_final:
             _post_github_status(repo, head_sha, context, "failure", f"Gate {gate}: result file not found (HTTP {e.code})", run_url, gh_token)
         print(f"Gate {gate} failed: result file not found (HTTP {e.code})", file=sys.stderr)
         sys.exit(1)
@@ -297,8 +269,8 @@ def cmd_run_gate(args):
     if gate == "4":
         # Inject pre-flight result and re-derive overall status from tests
         result["store_failures_config_ok"] = store_failures_config_ok
-        _, tests = parse_gate_4_result(result)
-        overall_status = gate_4_overall_status(tests)
+        status_from_notebook, tests = parse_gate_4_result(result)
+        overall_status = "error" if status_from_notebook == "error" else gate_4_overall_status(tests)
         item_count = len(tests)
         item_label = "test(s)"
     elif gate == "3":
@@ -309,7 +281,7 @@ def cmd_run_gate(args):
         overall_status = result.get("overall_status", "fail")
         item_count = len(result.get("artifacts") or [])
         item_label = "artifact(s)"
-        if "latest_hash" not in result:
+        if overall_status == "fail" and "latest_hash" not in result:
             import label_binding
             result["latest_hash"] = label_binding.compute_diff_hash(result.get("artifacts") or [])
     elif gate == "2":
@@ -325,7 +297,7 @@ def cmd_run_gate(args):
     gh_state = map_gate_status(overall_status)
 
     description = f"Gate {gate}: {overall_status}"
-    if repo and gh_token:
+    if repo and gh_token and not no_emit_final:
         _post_github_status(repo, head_sha, context, gh_state, description, run_url, gh_token)
 
     print(f"Gate {gate} result: {overall_status} ({item_count} {item_label}) → GitHub status: {gh_state}", flush=True)
@@ -352,6 +324,8 @@ def main():
     p.add_argument("--notebook-id", required=True)
     p.add_argument("--head-sha", required=True)
     p.add_argument("--output", default=None)
+    p.add_argument("--no-emit-final", action="store_true", default=False,
+                   help="Skip posting the final success/failure status; only post pending.")
 
     args = parser.parse_args()
     {"run-gate": cmd_run_gate}[args.command](args)

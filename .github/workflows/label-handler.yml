@@ -29,9 +29,9 @@ jobs:
       github.event.action == 'synchronize' ||
       github.event.label.name == 'diff-acknowledged'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -39,7 +39,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           EVENT_ACTION: ${{ github.event.action }}
           LABEL_NAME: ${{ github.event.label.name }}
@@ -52,7 +52,7 @@ jobs:
           import pr_comment, emit_status, label_binding, notify_render
 
           repo = os.environ["GITHUB_REPOSITORY"]
-          sha = os.environ["GITHUB_SHA"]
+          sha = os.environ["PR_HEAD_SHA"]
           pr_number = os.environ["PR_NUMBER"]
           event_action = os.environ["EVENT_ACTION"]
           label_name = os.environ.get("LABEL_NAME", "")
@@ -94,6 +94,8 @@ jobs:
                   if gate5_body:
                       new_gate5 = notify_render.toggle_gate_5_ack(gate5_body, ack_active=True)
                       pr_comment.upsert(notify_render.GATE_5_MARKER, new_gate5, pr_number, repo)
+              else:
+                  print(f"warning: Gate 5 marker comment not found for PR {pr_number} — ack banner not toggled", file=sys.stderr, flush=True)
               emit_status.emit_status(repo, sha, "ci/data-diff", "success",
                                      "Gate 5: diff acknowledged", run_url)
 
@@ -128,6 +130,11 @@ jobs:
                   if gate5_body:
                       new_gate5 = notify_render.toggle_gate_5_ack(gate5_body, ack_active=False)
                       pr_comment.upsert(notify_render.GATE_5_MARKER, new_gate5, pr_number, repo)
+              # Posting failure is always correct here: `diff-acknowledged` only reaches the
+              # bound state when Gate 5 previously reported a non-empty diff for this head SHA
+              # (label_binding.label_handler_decision rejects application when no non-empty diff
+              # is present). Removing the label therefore restores exactly the failure state
+              # Gate 5 originally emitted — there is no "empty diff" case to guard against.
               emit_status.emit_status(repo, sha, "ci/data-diff", "failure",
                                      "Gate 5: diff-acknowledged label removed", run_url)
           EOF

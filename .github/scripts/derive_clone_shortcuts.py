@@ -95,7 +95,7 @@ def _run_dbt_ls() -> List[str]:
             f"stdout/stderr (first 500 chars): "
             f"{(result.stdout + result.stderr)[:500]}"
         )
-        return []
+        sys.exit(1)
     unique_ids: List[str] = []
     for line in result.stdout.splitlines():
         line = line.strip()

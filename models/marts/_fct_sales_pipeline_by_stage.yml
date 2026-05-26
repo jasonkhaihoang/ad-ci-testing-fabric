@@ -1,0 +1,51 @@
+version: 2
+
+models:
+  - name: fct_sales_pipeline_by_stage
+    config:
+      meta:
+        owner: jason.khai.hoang@acceleratedata.ai
+    description: |
+      Sales pipeline summary aggregated by stage, fiscal year, and fiscal quarter.
+      Grain: one row per (stage_name, fiscal_year, fiscal_quarter).
+      Useful for pipeline health reporting and stage-level funnel analysis.
+    columns:
+      - name: stage_name
+        description: Sales stage of the opportunity (e.g., Prospecting, Closed Won)
+        data_type: string
+        tests:
+          - not_null
+
+      - name: fiscal_year
+        description: Fiscal year derived from opportunity close date
+        data_type: integer
+
+      - name: fiscal_quarter
+        description: Fiscal quarter derived from opportunity close date (Q1–Q4)
+        data_type: string
+
+      - name: opportunity_count
+        description: Total number of opportunities in this stage/period
+        data_type: integer
+        tests:
+          - not_null
+
+      - name: won_count
+        description: Number of won opportunities in this stage/period
+        data_type: integer
+
+      - name: lost_count
+        description: Number of lost (closed but not won) opportunities in this stage/period
+        data_type: integer
+
+      - name: total_amount
+        description: Sum of opportunity amounts in this stage/period
+        data_type: decimal
+
+      - name: weighted_amount
+        description: Sum of weighted pipeline value (amount × probability / 100) in this stage/period
+        data_type: decimal
+
+      - name: avg_probability
+        description: Average close probability across opportunities in this stage/period
+        data_type: decimal

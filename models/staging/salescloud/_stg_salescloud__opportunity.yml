@@ -98,3 +98,11 @@ models:
       - name: system_modified_timestamp
         description: System-maintained modification timestamp
         data_type: timestamp
+
+      - name: fiscal_quarter
+        description: Derived fiscal quarter of the close date (Q1=Jan-Mar, Q2=Apr-Jun, Q3=Jul-Sep, Q4=Oct-Dec). Null if close_date is null.
+        data_type: string
+
+      - name: fiscal_year
+        description: Derived fiscal year of the close date (calendar year). Null if close_date is null.
+        data_type: integer

@@ -195,10 +195,10 @@ def post_workspace_comment_only():
     provision_failed = provision_outcome != "success"
     run_url = os.environ.get("RUN_URL", "")
 
-    notebook_id = os.environ.get("NOTEBOOK_ID", "")
+    interactive_notebook_id = os.environ.get("INTERACTIVE_NOTEBOOK_ID", "")
     notebook_url = ""
-    if notebook_id and workspace_id:
-        notebook_url = f"https://app.fabric.microsoft.com/groups/{workspace_id}/synapsenotebooks/{notebook_id}"
+    if interactive_notebook_id and workspace_id:
+        notebook_url = f"https://app.fabric.microsoft.com/groups/{workspace_id}/synapsenotebooks/{interactive_notebook_id}"
 
     if provision_failed:
         workspace_comment = render_provision_failed(

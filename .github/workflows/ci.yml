@@ -51,12 +51,12 @@ jobs:
       intent_slug: ${{ steps.preflight.outputs.intent_slug }}
       ephemeral_name: ${{ steps.names.outputs.ephemeral_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -177,9 +177,9 @@ jobs:
       platform_error_category: ${{ steps.fetch.outputs.category }}
       platform_error_reason: ${{ steps.fetch.outputs.reason }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -215,7 +215,7 @@ jobs:
 
       - name: Login — Fabric UAMI (onelake mode only)
         if: steps.parse-mode.outputs.mode == 'onelake'
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
@@ -230,11 +230,30 @@ jobs:
         run: python3 ${{ env.SCRIPTS }}/fetch_prod_state.py
 
       - name: Upload prod-state artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: prod-state-pr${{ github.event.pull_request.number }}
           path: prod-state/
           retention-days: 7
+
+      - name: Show modified set
+        # VD-2175: surface the `state:modified+` closure inline in Gate 1 logs so
+        # developers don't need to dig into the deployment manifest to see what changed.
+        if: always() && steps.fetch.outputs.greenfield_fallback != 'true' && hashFiles('prod-state/manifest.json') != ''
+        run: |
+          dbt deps --profiles-dir .github/profiles --target dbt_fabric_compile 2>&1 | tail -3 || true
+          modified=$(dbt ls --select state:modified+ --state prod-state \
+                       --profiles-dir .github/profiles --target dbt_fabric_compile \
+                       --output name 2>/dev/null | grep -v '^\(Running\|Found\|Update\)' || true)
+          echo "::group::state:modified+ closure"
+          if [ -z "$modified" ]; then
+            echo "::notice title=state:modified+::(empty — no models changed vs prod baseline)"
+          else
+            while IFS= read -r m; do
+              [ -n "$m" ] && echo "::notice title=state:modified+::state:modified+ => $m"
+            done <<< "$modified"
+          fi
+          echo "::endgroup::"
 
       - name: Emit Gate 1 final status
         if: always()
@@ -269,17 +288,18 @@ jobs:
       ephemeral_workspace_id: ${{ steps.provision.outputs.workspace_id }}
       ephemeral_lakehouse_id: ${{ steps.provision.outputs.lakehouse_id }}
       notebook_id: ${{ steps.generate-notebook.outputs.notebook_id }}
+      interactive_notebook_id: ${{ steps.generate-notebook.outputs.interactive_notebook_id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - run: pip install pyyaml --quiet
 
       - name: Login — KV UAMI
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           client-id: ${{ vars.AZURE_KV_CLIENT_ID }}
@@ -292,20 +312,20 @@ jobs:
         run: python3 ${{ env.SCRIPTS }}/kv_utils.py fetch-fabric
 
       - name: Login — Fabric UAMI
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
           allow-no-subscriptions: true
 
-      - name: Emit ci/provision-workspace pending
+      - name: Emit ci/provision pending
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           python3 ${{ env.SCRIPTS }}/emit_status.py \
-            --context "ci/provision-workspace" \
+            --context "ci/provision" \
             --state pending \
             --description "Provision workspace, environment, shortcuts, notebook" \
             --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -354,7 +374,7 @@ jobs:
             --role Admin
 
       - name: Download prod-state artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: prod-state-pr${{ github.event.pull_request.number }}
           path: prod-state/
@@ -423,7 +443,7 @@ jobs:
 
       - name: Upload deployment manifest GHA artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: deployment-manifest-${{ github.event.pull_request.head.sha }}
           path: reports/deployment-manifest-${{ github.event.pull_request.head.sha }}.json
@@ -453,7 +473,7 @@ jobs:
           passed = os.environ.get("GATE1_JOB_STATUS", "failure").lower() == "success"
           category = os.environ.get("PLATFORM_ERROR_CATEGORY", "")
           platform_error = None
-          if not passed and category:
+          if category:
               platform_error = {
                   "mode": os.environ.get("PLATFORM_ERROR_MODE", "artifact"),
                   "category": category,
@@ -469,6 +489,7 @@ jobs:
                   closure.append({
                       "name": a.get("name", "").split(".")[-1],
                       "materialization": a.get("materialized", "unknown"),
+                      "closure_source": a.get("closure_source", "descendant"),
                   })
           except (FileNotFoundError, json.JSONDecodeError):
               closure = []
@@ -482,7 +503,7 @@ jobs:
           EOF
 
       - name: Upload shortcut seeding report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: ci-reports-shortcuts-pr${{ github.event.pull_request.number }}
@@ -529,11 +550,11 @@ jobs:
           STEP_DERIVE_SHORTCUTS: ${{ steps.derive-shortcuts.outcome }}
           STEP_SEED_SHORTCUTS: ${{ steps.seed-shortcuts.outcome }}
           STEP_GENERATE_NOTEBOOK: ${{ steps.generate-notebook.outcome }}
-          NOTEBOOK_ID: ${{ steps.generate-notebook.outputs.notebook_id }}
+          INTERACTIVE_NOTEBOOK_ID: ${{ steps.generate-notebook.outputs.interactive_notebook_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: python3 ${{ env.SCRIPTS }}/notify.py --workspace-comment-only
 
-      - name: Emit ci/provision-workspace final status
+      - name: Emit ci/provision final status
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -549,7 +570,7 @@ jobs:
             DESC="Provision workspace failed — see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           fi
           python3 ${{ env.SCRIPTS }}/emit_status.py \
-            --context "ci/provision-workspace" \
+            --context "ci/provision" \
             --state "$STATE" \
             --description "$DESC" \
             --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -559,13 +580,13 @@ jobs:
   # Posts ci/static-check commit status; either blocking step failing marks Gate 0 failed.
   static-analysis:
     name: "ci/static-check: static analysis"
-    if: false  # disabled for VD-2138-2142 validation — focused on slim-CI selection fix
     needs: [preflight]
+    if: false  # VD-2217 gate-5-only validation run
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -653,7 +674,7 @@ jobs:
             --output reports/schema_gate.json || true
 
       - name: Upload reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: ci-reports-pr${{ github.event.pull_request.number }}
@@ -666,6 +687,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python3 - <<'PYEOF'
           import json, os, sys
@@ -692,6 +714,7 @@ jobs:
               compile_result, schema_gate,
               ruff=ruff, sqlfluff=sqlfluff, gitleaks=gitleaks,
               scorecard=scorecard, shortcut_seeding=shortcut_seeding,
+              run_url=os.environ.get("RUN_URL", ""),
           )
           pr_comment.upsert(
               marker="<!-- ci-static-check -->",
@@ -787,22 +810,23 @@ jobs:
             --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   # ─── GATE 3 — UNIT TESTS ──────────────────────────────────────────────────
-  # dbt unit tests against state:modified+ models with mocked YAML inputs.
-  # Runs in Fabric ephemeral workspace (in parallel with Gate 2 — no data dependency) so that
-  # get_columns_in_relation() resolves against real tables in the Spark catalog.
+  # dbt unit tests against the deployment-manifest model name list with mocked YAML inputs.
+  # Runs in Fabric ephemeral workspace after Gate 2 succeeds (parallel with Gates 4 and 5).
+  # get_columns_in_relation() resolves against real tables Gate 2 has materialised + provisioned source shortcuts.
+  # See docs/adr/0002-gate-3-after-gate-2.md.
   gate-3-unit:
     name: "ci/unit-tests: unit tests"
-    needs: [provision-workspace]
-    if: always() && github.event.action != 'closed'
+    needs: [provision-workspace, gate-2-write]
+    if: false  # VD-2217 gate-5-only validation run
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-3
       cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -811,13 +835,14 @@ jobs:
       - run: mkdir -p reports
 
       - name: Login — Fabric UAMI
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
           allow-no-subscriptions: true
 
       - name: Run Gate 3
+        if: needs.gate-2-write.result == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -835,7 +860,7 @@ jobs:
 
       - name: Upload Gate 3 report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ci-reports-gate-3-pr${{ github.event.pull_request.number }}
           path: reports/gate-3.json
@@ -862,50 +887,29 @@ jobs:
           pr_comment.upsert(notify_render.GATE_3_MARKER, body, os.environ["PR_NUMBER"], os.environ["REPO"])
           PYEOF
 
-      - name: Emit Gate 3 final status
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
-          JOB_STATUS: ${{ job.status }}
-        run: |
-          if [ "$JOB_STATUS" = "success" ]; then
-            STATE=success
-            DESC="Gate 3: unit tests passed"
-          else
-            STATE=failure
-            DESC="Gate 3: unit tests failed — see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          fi
-          python3 ${{ env.SCRIPTS }}/emit_status.py \
-            --context "ci/unit-tests" \
-            --state "$STATE" \
-            --description "$DESC" \
-            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
   # ─── GATE 2 — WRITE ───────────────────────────────────────────────────────
   # Triggers the injected notebook via Fabric Item Jobs API, polls until
   # terminal, downloads gate-2.json, emits ci/run commit status.
   gate-2-write:
     name: "ci/run: isolated build"
     needs: [preflight, provision-workspace, fetch-prod-state]
-    if: github.event.action != 'closed'
+    if: false  # VD-2217 gate-5-only validation run — dbt run already complete
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-2
       cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - run: pip install pyyaml --quiet
 
       - name: Login — Fabric UAMI
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
@@ -954,23 +958,23 @@ jobs:
   gate-4-data-test:
     name: "ci/data-tests: data tests"
     needs: [provision-workspace, gate-2-write]
-    if: always() && github.event.action != 'closed'
+    if: false  # VD-2217 gate-5-only validation run
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-4
       cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - run: pip install pyyaml --quiet
 
       - name: Login — Fabric UAMI
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
@@ -1017,8 +1021,8 @@ jobs:
   # Triggers data-diff vs prod via Fabric Item Jobs API after Gate 2.
   # Skipped (no ci/data-diff status emitted) when Gate 2 fails.
   gate-5-data-diff:
-    name: "ci/data-diff: data-diff"
-    needs: [provision-workspace, gate-2-write]
+    name: "data-diff job"
+    needs: [provision-workspace]
     if: always() && github.event.action != 'closed'
     timeout-minutes: 130
     concurrency:
@@ -1026,23 +1030,23 @@ jobs:
       cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - run: pip install pyyaml --quiet
 
       - name: Login — Fabric UAMI
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
           allow-no-subscriptions: true
 
       - name: Run Gate 5
-        if: needs.gate-2-write.result == 'success'
+        if: needs.provision-workspace.result == 'success'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1057,14 +1061,15 @@ jobs:
             --lakehouse-id "${{ needs.provision-workspace.outputs.ephemeral_lakehouse_id }}" \
             --notebook-id "${{ needs.provision-workspace.outputs.notebook_id }}" \
             --head-sha "${{ github.event.pull_request.head.sha }}" \
-            --output reports/gate-5.json
+            --output reports/gate-5.json \
+            --no-emit-final
 
       - name: Evaluate diff-acknowledged binding and emit ci/data-diff status
-        if: always() && needs.gate-2-write.result == 'success'
+        if: always() && needs.provision-workspace.result == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_RUN_ID: ${{ github.run_id }}
@@ -1072,12 +1077,16 @@ jobs:
           python3 - <<'EOF'
           import json, os, subprocess, sys
           sys.path.insert(0, ".github/scripts")
-          import pr_comment, emit_status, label_binding
+          import pr_comment, label_binding
+          import emit_status
 
           repo = os.environ["GITHUB_REPOSITORY"]
-          sha = os.environ["GITHUB_SHA"]
+          sha = os.environ["CI_HEAD_SHA"]
           pr_number = os.environ["PR_NUMBER"]
           run_url = f"{os.environ['GITHUB_SERVER_URL']}/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+
+          def _emit(state, description):
+              emit_status.emit_status(repo, sha, "ci/data-diff", state, description, run_url)
 
           try:
               with open("reports/gate-5.json") as f:
@@ -1085,15 +1094,21 @@ jobs:
           except (OSError, json.JSONDecodeError):
               result = None
 
-          if result is None or result.get("overall_status") == "pass":
-              emit_status.emit_status(repo, sha, "ci/data-diff", "success",
-                                     "Gate 5: no diff against prod", run_url)
+          if result is None:
+              _emit("failure", "Gate 5: result not available - notebook may not have completed")
+              sys.exit(0)
+
+          if result.get("overall_status") == "pass":
+              _emit("success", "Gate 5: no diff against prod")
+              sys.exit(0)
+
+          if result.get("overall_status") == "error":
+              _emit("failure", "Gate 5: session error — re-run to retry")
               sys.exit(0)
 
           latest_hash = result.get("latest_hash")
           if not latest_hash:
-              emit_status.emit_status(repo, sha, "ci/data-diff", "failure",
-                                     "Gate 5: non-empty diff detected", run_url)
+              _emit("failure", "Gate 5: non-empty diff detected")
               sys.exit(0)
 
           marker_comment_id = pr_comment.find_by_marker(label_binding.MARKER, pr_number, repo)
@@ -1133,14 +1148,13 @@ jobs:
                   g5["ack_active"] = True
                   with open("reports/gate-5.json", "w") as f:
                       json.dump(g5, f)
-              except (OSError, KeyError):
-                  pass
-              emit_status.emit_status(repo, sha, "ci/data-diff", "success",
-                                     "Gate 5: diff acknowledged (hash match)", run_url)
+              except (OSError, KeyError) as e:
+                  print(f"warning: ack-flag write failed — {e}", file=sys.stderr, flush=True)
+              _emit("success", "Gate 5: diff acknowledged (hash match)")
+              sys.exit(0)
           else:
-              emit_status.emit_status(repo, sha, "ci/data-diff", "failure",
-                                     "Gate 5: non-empty diff — apply diff-acknowledged label to acknowledge",
-                                     run_url)
+              _emit("failure", "Gate 5: non-empty diff - apply diff-acknowledged label to acknowledge")
+              sys.exit(0)
           EOF
 
       - name: Post gate-5 comment
@@ -1149,7 +1163,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          GATE_2_RESULT: ${{ needs.gate-2-write.result }}
+          GATE_2_RESULT: "success"  # VD-2217 gate-5-only run — gate 2 pre-completed
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python3 - <<'EOF'

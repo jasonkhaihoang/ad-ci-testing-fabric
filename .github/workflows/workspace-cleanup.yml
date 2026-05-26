@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
   # pull_request_target always reads this workflow from the default branch,
   # firing reliably for all PRs regardless of when they were opened (VD-2028).
-  # actions/checkout@v4 defaults to the base-branch ref under this trigger —
+  # actions/checkout@v5 defaults to the base-branch ref under this trigger —
   # no untrusted PR code is checked out, so secrets exposure is safe.
   pull_request_target:
     types: [closed]
@@ -27,16 +27,16 @@ jobs:
   cleanup:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - run: pip install requests pyyaml --quiet
 
       - name: Login — Fabric UAMI
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
@@ -55,7 +55,7 @@ jobs:
 
       - name: Upload audit log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: workspace-cleanup-audit-${{ github.run_id }}
           path: workspace-cleanup-audit.json

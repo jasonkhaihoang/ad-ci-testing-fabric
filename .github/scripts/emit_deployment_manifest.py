@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 
 try:
-    from scripts.dbt_ls import run_dbt_ls
+    from scripts.dbt_ls import run_dbt_ls, run_dbt_ls_modified
 except ImportError:
-    from dbt_ls import run_dbt_ls
+    from dbt_ls import run_dbt_ls, run_dbt_ls_modified
 
 
 def build_deployment_manifest(
@@ -29,6 +30,7 @@ def build_deployment_manifest(
     current_nodes: dict,
     prod_node_ids: set[str],
     project_name: str = "",
+    modified_uids: "set[str] | None" = None,
 ) -> dict:
     """Pure: build the deployment manifest dict from already-fetched values.
 
@@ -36,7 +38,10 @@ def build_deployment_manifest(
     current_nodes: nodes dict from target/manifest.json (uid -> node).
     closure_uids: unique_ids from dbt ls --select state:modified+.
     project_name: when provided, only models with matching package_name are emitted.
+    modified_uids: unique_ids from dbt ls --select state:modified (no +).
+                   None or empty → all artifacts default to 'descendant'.
     """
+    _modified = modified_uids or set()
     artifacts = []
     for uid in closure_uids:
         node = current_nodes.get(uid)
@@ -53,6 +58,7 @@ def build_deployment_manifest(
                 "schema": node.get("schema", ""),
                 "pre_existing_in_prod": uid in prod_node_ids,
                 "unique_key": config.get("unique_key"),
+                "closure_source": "modified" if uid in _modified else "descendant",
             }
         )
     return {"head_sha": head_sha, "artifacts": artifacts}
@@ -84,8 +90,12 @@ def main() -> None:
 
     greenfield = _is_greenfield()
     closure_uids = run_dbt_ls() if not greenfield else []
+    modified_uids = run_dbt_ls_modified() if not greenfield else set()
 
-    current_manifest = _read_json("target/manifest.json") or {}
+    current_manifest = _read_json("target/manifest.json")
+    if current_manifest is None and not greenfield:
+        sys.exit("Missing artifact: target/manifest.json — re-run `dbt compile` or push a new commit.")
+    current_manifest = current_manifest or {}
     current_nodes = current_manifest.get("nodes", {})
     project_name: str = current_manifest.get("metadata", {}).get("project_name", "")
 
@@ -100,6 +110,7 @@ def main() -> None:
         current_nodes=current_nodes,
         prod_node_ids=prod_node_ids,
         project_name=project_name,
+        modified_uids=modified_uids,
     )
 
     os.makedirs("reports", exist_ok=True)

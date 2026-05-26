@@ -38,20 +38,19 @@ renamed as (
         lastmodifieddate as last_modified_date,
         systemmodstamp as system_modified_timestamp,
 
-        -- VD-2136: schema delta marker to trigger Gate 5 non-empty diff
-        true as is_vd2136_validation
+        -- Derived: fiscal quarter from close date
+        case
+            when month(closedate) in (1, 2, 3) then 'Q1'
+            when month(closedate) in (4, 5, 6) then 'Q2'
+            when month(closedate) in (7, 8, 9) then 'Q3'
+            when month(closedate) in (10, 11, 12) then 'Q4'
+        end as fiscal_quarter,
+
+        -- Derived: fiscal year of close date
+        year(closedate) as fiscal_year
 
     from source
-    where isdeleted = false  -- Exclude soft-deleted records
+    where isdeleted = false
 )
 
 select * from renamed
--- modified: 2026-05-16
-
--- validation: VD-2030/VD-2035/VU-1194 2026-05-18
-
--- validation: VD-1747 2026-05-19
-
--- validation: VD-2138-2142 2026-05-22
-
--- re-trigger: VD-2138-2142 post-main-baseline 2026-05-22
