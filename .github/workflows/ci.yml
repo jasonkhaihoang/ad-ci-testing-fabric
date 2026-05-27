@@ -66,13 +66,21 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 ${{ env.SCRIPTS }}/emit_status.py \
-            --context "ci/preflight" \
-            --state pending \
-            --description "Preflight: validating intent + config" \
-            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          python3 - <<'EOF'
+          import os, sys
+          sys.path.insert(0, ".github/scripts")
+          import emit_status
+          emit_status.emit_status(
+              os.environ["GITHUB_REPOSITORY"],
+              os.environ["CI_HEAD_SHA"],
+              "ci/preflight",
+              "pending",
+              "Preflight: validating intent + config",
+              "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+          )
+          EOF
 
       - name: Check branch sync
         id: sync
@@ -142,26 +150,42 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 ${{ env.SCRIPTS }}/emit_status.py \
-            --context "ci/preflight" \
-            --state success \
-            --description "Preflight passed" \
-            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          python3 - <<'EOF'
+          import os, sys
+          sys.path.insert(0, ".github/scripts")
+          import emit_status
+          emit_status.emit_status(
+              os.environ["GITHUB_REPOSITORY"],
+              os.environ["CI_HEAD_SHA"],
+              "ci/preflight",
+              "success",
+              "Preflight passed",
+              "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+          )
+          EOF
 
       - name: Emit ci/preflight failure
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 ${{ env.SCRIPTS }}/emit_status.py \
-            --context "ci/preflight" \
-            --state failure \
-            --description "Preflight failed — see PR comment" \
-            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          python3 - <<'EOF'
+          import os, sys
+          sys.path.insert(0, ".github/scripts")
+          import emit_status
+          emit_status.emit_status(
+              os.environ["GITHUB_REPOSITORY"],
+              os.environ["CI_HEAD_SHA"],
+              "ci/preflight",
+              "failure",
+              "Preflight failed — see PR comment",
+              "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+          )
+          EOF
 
   # ─── FETCH PROD STATE ────────────────────────────────────────────────────────
   # Downloads prod-state/manifest.json for Slim CI deferral.
@@ -189,13 +213,21 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 ${{ env.SCRIPTS }}/emit_status.py \
-            --context "ci/state-modified+" \
-            --state pending \
-            --description "Gate 1: fetching prod state" \
-            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          python3 - <<'EOF'
+          import os, sys
+          sys.path.insert(0, ".github/scripts")
+          import emit_status
+          emit_status.emit_status(
+              os.environ["GITHUB_REPOSITORY"],
+              os.environ["CI_HEAD_SHA"],
+              "ci/state-modified+",
+              "pending",
+              "Gate 1: fetching prod state",
+              "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+          )
+          EOF
 
       - name: Parse prod manifest mode
         id: parse-mode
@@ -260,21 +292,27 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          if [ "$JOB_STATUS" = "success" ]; then
-            STATE=success
-            DESC="Gate 1: prod state resolved"
-          else
-            STATE=failure
-            DESC="Gate 1: failed — see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          fi
-          python3 ${{ env.SCRIPTS }}/emit_status.py \
-            --context "ci/state-modified+" \
-            --state "$STATE" \
-            --description "$DESC" \
-            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          python3 - <<'EOF'
+          import os, sys
+          sys.path.insert(0, ".github/scripts")
+          import emit_status
+          run_url = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if os.environ["JOB_STATUS"] == "success":
+              state, desc = "success", "Gate 1: prod state resolved"
+          else:
+              state, desc = "failure", f"Gate 1: failed — see {run_url}"
+          emit_status.emit_status(
+              os.environ["GITHUB_REPOSITORY"],
+              os.environ["CI_HEAD_SHA"],
+              "ci/state-modified+",
+              state,
+              desc,
+              run_url,
+          )
+          EOF
 
   # ─── PROVISION ────────────────────────────────────────────────────────────
   # 1. KV UAMI: fetch Fabric capacity ID + GitHub App config → GITHUB_ENV
@@ -322,13 +360,21 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 ${{ env.SCRIPTS }}/emit_status.py \
-            --context "ci/provision" \
-            --state pending \
-            --description "Provision workspace, environment, shortcuts, notebook" \
-            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          python3 - <<'EOF'
+          import os, sys
+          sys.path.insert(0, ".github/scripts")
+          import emit_status
+          emit_status.emit_status(
+              os.environ["GITHUB_REPOSITORY"],
+              os.environ["CI_HEAD_SHA"],
+              "ci/provision",
+              "pending",
+              "Provision workspace, environment, shortcuts, notebook",
+              "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+          )
+          EOF
 
       - name: Cancel in-flight jobs
         env:
@@ -559,21 +605,27 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          if [ "$JOB_STATUS" = "success" ]; then
-            STATE=success
-            DESC="Provision workspace ready"
-          else
-            STATE=failure
-            DESC="Provision workspace failed — see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          fi
-          python3 ${{ env.SCRIPTS }}/emit_status.py \
-            --context "ci/provision" \
-            --state "$STATE" \
-            --description "$DESC" \
-            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          python3 - <<'EOF'
+          import os, sys
+          sys.path.insert(0, ".github/scripts")
+          import emit_status
+          run_url = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if os.environ["JOB_STATUS"] == "success":
+              state, desc = "success", "Provision workspace ready"
+          else:
+              state, desc = "failure", f"Provision workspace failed — see {run_url}"
+          emit_status.emit_status(
+              os.environ["GITHUB_REPOSITORY"],
+              os.environ["CI_HEAD_SHA"],
+              "ci/provision",
+              state,
+              desc,
+              run_url,
+          )
+          EOF
 
   # ─── STATIC ANALYSIS ──────────────────────────────────────────────────────
   # Gate 0: linting + dbt compile + build --empty + diff-scoped schema gate.
@@ -581,7 +633,6 @@ jobs:
   static-analysis:
     name: "ci/static-check: static analysis"
     needs: [preflight]
-    if: false  # VD-2217 gate-5-only validation run
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -602,13 +653,21 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 ${{ env.SCRIPTS }}/emit_status.py \
-            --context "ci/static-check" \
-            --state pending \
-            --description "Gate 0: static analysis running" \
-            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          python3 - <<'EOF'
+          import os, sys
+          sys.path.insert(0, ".github/scripts")
+          import emit_status
+          emit_status.emit_status(
+              os.environ["GITHUB_REPOSITORY"],
+              os.environ["CI_HEAD_SHA"],
+              "ci/static-check",
+              "pending",
+              "Gate 0: static analysis running",
+              "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+          )
+          EOF
 
       - name: ruff
         continue-on-error: true
@@ -793,21 +852,27 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          if [ "$JOB_STATUS" = "success" ]; then
-            STATE=success
-            DESC="Gate 0: all checks passed"
-          else
-            STATE=failure
-            DESC="Gate 0: one or more checks failed"
-          fi
-          python3 ${{ env.SCRIPTS }}/emit_status.py \
-            --context "ci/static-check" \
-            --state "$STATE" \
-            --description "$DESC" \
-            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          python3 - <<'EOF'
+          import os, sys
+          sys.path.insert(0, ".github/scripts")
+          import emit_status
+          run_url = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if os.environ["JOB_STATUS"] == "success":
+              state, desc = "success", "Gate 0: all checks passed"
+          else:
+              state, desc = "failure", "Gate 0: one or more checks failed"
+          emit_status.emit_status(
+              os.environ["GITHUB_REPOSITORY"],
+              os.environ["CI_HEAD_SHA"],
+              "ci/static-check",
+              state,
+              desc,
+              run_url,
+          )
+          EOF
 
   # ─── GATE 3 — UNIT TESTS ──────────────────────────────────────────────────
   # dbt unit tests against the deployment-manifest model name list with mocked YAML inputs.
@@ -817,7 +882,7 @@ jobs:
   gate-3-unit:
     name: "ci/unit-tests: unit tests"
     needs: [provision-workspace, gate-2-write]
-    if: false  # VD-2217 gate-5-only validation run
+    if: github.event.action != 'closed'
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-3
@@ -893,7 +958,7 @@ jobs:
   gate-2-write:
     name: "ci/run: isolated build"
     needs: [preflight, provision-workspace, fetch-prod-state]
-    if: false  # VD-2217 gate-5-only validation run — dbt run already complete
+    if: github.event.action != 'closed'
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-2
@@ -958,7 +1023,7 @@ jobs:
   gate-4-data-test:
     name: "ci/data-tests: data tests"
     needs: [provision-workspace, gate-2-write]
-    if: false  # VD-2217 gate-5-only validation run
+    if: always() && github.event.action != 'closed'
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-4
@@ -1022,7 +1087,7 @@ jobs:
   # Skipped (no ci/data-diff status emitted) when Gate 2 fails.
   gate-5-data-diff:
     name: "data-diff job"
-    needs: [provision-workspace]
+    needs: [provision-workspace, gate-2-write]
     if: always() && github.event.action != 'closed'
     timeout-minutes: 130
     concurrency:
@@ -1046,7 +1111,7 @@ jobs:
           allow-no-subscriptions: true
 
       - name: Run Gate 5
-        if: needs.provision-workspace.result == 'success'
+        if: needs.gate-2-write.result == 'success'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1065,7 +1130,7 @@ jobs:
             --no-emit-final
 
       - name: Evaluate diff-acknowledged binding and emit ci/data-diff status
-        if: always() && needs.provision-workspace.result == 'success'
+        if: always() && needs.gate-2-write.result == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -1163,7 +1228,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          GATE_2_RESULT: "success"  # VD-2217 gate-5-only run — gate 2 pre-completed
+          GATE_2_RESULT: ${{ needs.gate-2-write.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python3 - <<'EOF'
