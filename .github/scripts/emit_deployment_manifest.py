@@ -89,8 +89,8 @@ def main() -> None:
     head_sha = os.environ["HEAD_SHA"].strip()
 
     greenfield = _is_greenfield()
-    closure_uids = run_dbt_ls() if not greenfield else []
-    modified_uids = run_dbt_ls_modified() if not greenfield else set()
+    closure_uids = run_dbt_ls()
+    modified_uids = run_dbt_ls_modified()
 
     current_manifest = _read_json("target/manifest.json")
     if current_manifest is None and not greenfield:
