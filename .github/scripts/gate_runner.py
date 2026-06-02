@@ -31,6 +31,10 @@ except ImportError:
     yaml = None
 
 import fabric_transport
+from parse_run_results import (
+    check_store_failures_config as _check_store_failures_config_dict,
+    gate_4_overall_status,
+)
 
 FABRIC_API = "https://api.fabric.microsoft.com/v1"
 ONELAKE_DFS = "https://onelake.dfs.fabric.microsoft.com"
@@ -51,7 +55,11 @@ _GATE_CONTEXTS = {
 # ── Pure core ──────────────────────────────────────────────────────────────────
 
 def check_store_failures_config(dbt_project_path: str) -> bool:
-    """Return True if dbt_project.yml has tests: +store_failures: true and +store_failures_as: table."""
+    """Path-based adapter over shared `check_store_failures_config(dict)`.
+
+    Loads YAML from disk (Fabric shell-local concern), delegates the rule check
+    to the shared thin interface in `parse_run_results.py`.
+    """
     if yaml is None:
         return False
     try:
@@ -59,30 +67,14 @@ def check_store_failures_config(dbt_project_path: str) -> bool:
             cfg = yaml.safe_load(f) or {}
     except (OSError, Exception):
         return False
-    tests = cfg.get("tests") or {}
-    if not isinstance(tests, dict):
-        return False
-    store_failures = tests.get("+store_failures")
-    store_failures_as = tests.get("+store_failures_as")
-    return bool(store_failures) and store_failures_as == "table"
+    return _check_store_failures_config_dict(cfg)
 
 
 def parse_gate_4_result(result_json: dict) -> tuple[str, list]:
-    """Extract (overall_status, tests) from a gate-4 result dict."""
+    """Extract (overall_status, tests) from a Fabric gate-4 notebook result dict."""
     status = result_json.get("overall_status", "")
     tests = result_json.get("tests") or []
     return status, tests
-
-
-def gate_4_overall_status(tests: list) -> str:
-    """Derive pass/fail from a list of test result dicts.
-
-    fail or error → 'fail'; skip alone → 'pass'; empty → 'pass'.
-    """
-    for t in tests:
-        if t.get("status") in ("fail", "error"):
-            return "fail"
-    return "pass"
 
 
 def parse_gate_result(result_json: dict) -> tuple[str, list]:

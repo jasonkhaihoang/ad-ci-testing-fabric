@@ -158,30 +158,15 @@ def cmd_teardown(args):
     print("Workspace deleted.", flush=True)
 
 
-def fetch_head_commit_date(repo, head_sha, gh_token):
-    """Return the committer date of *head_sha* as a UTC-aware datetime, or None."""
-    url = f"{GITHUB_API}/repos/{repo}/commits/{head_sha}"
-    req = urllib.request.Request(url)
-    req.add_header("Authorization", f"Bearer {gh_token}")
-    req.add_header("Accept", "application/vnd.github+json")
-    try:
-        with urllib.request.urlopen(req) as r:
-            data = json.loads(r.read())
-            date_str = data["commit"]["committer"]["date"]
-            return datetime.datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-    except Exception:
-        return None
 
-
-def workspace_decision(pr_state, commit_date, now, target_pr_number, pr_number):
+def workspace_decision(pr_state, target_pr_number, pr_number):
     """Pure decision function for a single workspace.
 
     Returns (reason, should_delete) where reason is one of:
       "skip"     - not the targeted PR (targeted mode only)
       "orphaned" - PR not found on GitHub
       "closed"   - PR is closed or merged
-      "expired"  - open PR whose head SHA commit is > 48h old
-      "active"   - open PR whose head SHA commit is <= 48h old
+      "active"   - open PR (always retained regardless of commit age)
     """
     if target_pr_number is not None and str(pr_number) != str(target_pr_number):
         return "skip", False
@@ -191,12 +176,7 @@ def workspace_decision(pr_state, commit_date, now, target_pr_number, pr_number):
         return "active", False  # can't determine state; keep safe
     if pr_state == "closed":
         return "closed", True
-    # open PR
-    if commit_date is None:
-        return "active", False
-    age_hours = (now - commit_date).total_seconds() / 3600
-    if age_hours > 48:
-        return "expired", True
+    # open PR — retained regardless of commit age
     return "active", False
 
 
@@ -220,7 +200,6 @@ def cmd_cleanup(args):
     gh_token = os.environ.get("GH_TOKEN", "")
     repo = args.repo
     target_pr = getattr(args, "pr_number", None)
-    now = datetime.datetime.now(datetime.timezone.utc)
 
     resp = fabric_transport.request("GET", "/workspaces")
     ephemeral = [
@@ -239,15 +218,9 @@ def cmd_cleanup(args):
             continue
         pr_number = parts[-1]
 
-        pr_state, head_sha = _fetch_pr_info(repo, pr_number, gh_token)
+        pr_state, _head_sha = _fetch_pr_info(repo, pr_number, gh_token)
 
-        commit_date = None
-        if pr_state == "open" and head_sha:
-            commit_date = fetch_head_commit_date(repo, head_sha, gh_token)
-
-        reason, should_delete = workspace_decision(
-            pr_state, commit_date, now, target_pr, pr_number
-        )
+        reason, should_delete = workspace_decision(pr_state, target_pr, pr_number)
 
         if reason == "skip":
             continue

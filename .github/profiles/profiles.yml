@@ -17,11 +17,10 @@ dbt_fab_spark:
 
     # Gates 2, 3, 4, 5: real row execution against the ephemeral Fabric workspace.
     # method: livy is the only valid Fabric connection method.
-    # authentication: fabric_notebook uses notebookutils.credentials.getToken(),
-    # which is available in the Fabric notebook runtime (unlike az_cli which requires az login).
-    # Env vars set by run_dbt_job → setup_environment() before dbt is spawned.
+    # authentication: CLI uses az account get-access-token, works after azure/login (Fabric UAMI OIDC).
+    # Env vars set by gate runner scripts before dbt is spawned.
     ephemeral_ci:
-      authentication: fabric_notebook
+      authentication: CLI
       endpoint: https://msitapi.fabric.microsoft.com/v1
       workspaceid: "{{ env_var('WORKSPACE_ID') }}"
       workspace_name: "{{ env_var('WORKSPACE_NAME') }}"

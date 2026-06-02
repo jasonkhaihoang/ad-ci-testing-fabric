@@ -249,6 +249,13 @@ def render_gate_3(summary: dict) -> tuple[bool, str]:
             "Re-run the `ci/unit-tests` job to retry.\n",
         )
 
+    if overall == "skipped":
+        return (
+            True,
+            "## Unit Tests (ci/unit-tests) ⏭️\n\n"
+            "No unit tests found for the modified model closure — gate skipped.\n",
+        )
+
     passed = overall == "pass"
 
     summary_line = f"{p} passed / {f} failed / {e} errored / {s} skipped"
@@ -1032,6 +1039,7 @@ def render_provision_failed(
     )
 
 
+DESIGN_DRIFT_MARKER = "<!-- ci-design-drift -->"
 GATE_0_MARKER = "<!-- ci-static-check -->"
 GATE_1_MARKER = "<!-- ci-state-modified+ -->"
 GATE_2_MARKER = "<!-- ci-run -->"
@@ -1197,12 +1205,11 @@ def render_gate_2_comment(result, *, run_url: str = "") -> str:
         return (
             f"{GATE_2_MARKER}\n"
             f"## Isolated Build (ci/run) ❌\n\n"
-            f"Notebook run failed before writing results.{link}\n\n"
+            f"ci/run did not write results — the clone or build step failed before completion.{link}\n\n"
             f"**Likely causes:**\n"
-            f"- Fabric notebook crash (HTTP error or timeout from Livy)\n"
             f"- dbt compilation error preventing the clone or build from starting\n"
-            f"- Fabric capacity exhausted or transient API error\n\n"
-            f"Inspect the workflow logs above, then re-push or re-run ci/run.\n"
+            f"- Transient infrastructure error (capacity, auth, or network)\n\n"
+            f"Inspect the workflow logs to determine the root cause, then re-push or re-run ci/run.\n"
         )
     section = render_gate_2(result)
     return f"{GATE_2_MARKER}\n{section}"
@@ -1213,6 +1220,38 @@ def render_gate_3_comment(result) -> str:
         return f"{GATE_3_MARKER}\n## Unit Tests (ci/unit-tests) ⚠️\n\n_No data available._\n"
     _, section = render_gate_3(result)
     return f"{GATE_3_MARKER}\n{section}"
+
+
+def render_design_drift_comment(result: dict | None, modified_names: list[str] | None = None) -> str:
+    if result is None:
+        return f"{DESIGN_DRIFT_MARKER}\n## Design Drift (ci/design-drift) ⚠️\n\n_No data available._\n"
+
+    has_drift = result.get("has_drift", False)
+    findings = result.get("findings") or []
+
+    if not has_drift:
+        models_line = (
+            f"_{len(modified_names)} model(s) evaluated: {', '.join(modified_names)}_\n\n"
+            if modified_names else ""
+        )
+        section = (
+            f"## Design Drift (ci/design-drift) ✅\n\n"
+            f"{models_line}"
+            f"No drift detected — design.md matches the modified model set.\n"
+        )
+    else:
+        rows = "\n".join(
+            f"| {f.get('model', '')} | {f.get('kind', '')} | {f.get('detail', '')} |"
+            for f in findings
+        )
+        section = (
+            f"## Design Drift (ci/design-drift) ❌\n\n"
+            f"| Model | Kind | Detail |\n"
+            f"| --- | --- | --- |\n"
+            f"{rows}\n"
+        )
+
+    return f"{DESIGN_DRIFT_MARKER}\n{section}"
 
 
 def render_gate_4_comment(result) -> str:

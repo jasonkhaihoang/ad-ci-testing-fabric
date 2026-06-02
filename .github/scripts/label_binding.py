@@ -9,9 +9,6 @@ Public:
     read_marker(body) -> dict
     write_marker(latest_hash, bound_hash=None) -> str
     delete_bound(body) -> str
-    decide_labeled(marker) -> dict
-    decide_unlabeled() -> dict
-    decide_synchronize() -> dict
     decide_gate5_outcome(latest_hash, marker) -> dict
     label_handler_decision(event, label_name, marker) -> dict | None
 """
@@ -117,29 +114,18 @@ def delete_bound(body: str) -> str:
 
 # ── Decision functions ────────────────────────────────────────────────────────
 
-def decide_labeled(marker: dict) -> dict:
-    """Decide what to do on a pull_request labeled event for diff-acknowledged.
-
-    marker: output of read_marker().
-    Returns {"action": "bind", "hash": str} or {"action": "reject"}.
-    """
+def _decide_labeled(marker: dict) -> dict:
     latest = marker.get("latest_hash")
     if not latest:
         return {"action": "reject"}
     return {"action": "bind", "hash": latest}
 
 
-def decide_unlabeled() -> dict:
-    """Decide what to do on a pull_request unlabeled event for diff-acknowledged."""
+def _decide_unlabeled() -> dict:
     return {"action": "revert"}
 
 
-def decide_synchronize() -> dict:
-    """Decide what to do on pull_request synchronize (new head pushed).
-
-    The label is stripped visually; the marker comment is left unchanged so
-    Gate 5's next run can compare new_latest_hash against bound_hash.
-    """
+def _decide_synchronize() -> dict:
     return {"action": "strip_label"}
 
 
@@ -164,11 +150,11 @@ def label_handler_decision(event: str, label_name: str, marker: dict) -> dict | 
     synchronize is always routed regardless of label_name.
     """
     if event == "synchronize":
-        return decide_synchronize()
+        return _decide_synchronize()
     if label_name != LABEL_NAME:
         return None
     if event == "labeled":
-        return decide_labeled(marker)
+        return _decide_labeled(marker)
     if event == "unlabeled":
-        return decide_unlabeled()
+        return _decide_unlabeled()
     return None
