@@ -23,7 +23,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dbt
-        run: pip install "dbt-core>=1.8" "vd-dbt-fabricspark==1.9.15" pyyaml --quiet
+        run: pip install "dbt-core>=1.8" "dbt-fabricspark>=1.8" pyyaml --quiet
 
       - name: Generate prod-manifest profile
         run: |

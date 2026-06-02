@@ -325,7 +325,7 @@ jobs:
     outputs:
       ephemeral_workspace_id: ${{ steps.provision.outputs.workspace_id }}
       ephemeral_lakehouse_id: ${{ steps.provision.outputs.lakehouse_id }}
-      notebook_id: ${{ steps.generate-notebook.outputs.notebook_id }}
+      lakehouse_name: ${{ steps.provision.outputs.lakehouse_name }}
       interactive_notebook_id: ${{ steps.generate-notebook.outputs.interactive_notebook_id }}
     steps:
       - uses: actions/checkout@v5
@@ -564,7 +564,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-      - name: Generate and deploy CI notebook
+      - name: Deploy interactive notebook
         id: generate-notebook
         env:
           AZURE_KEYVAULT_URL: ${{ vars.AZURE_KEYVAULT_URL }}
@@ -678,7 +678,7 @@ jobs:
 
       - name: ruff
         continue-on-error: true
-        run: ruff check . --output-format json > reports/ruff.json 2>/dev/null
+        run: ruff check . --exclude .github --output-format json > reports/ruff.json 2>/dev/null
 
       - name: sqlfluff
         continue-on-error: true
@@ -882,10 +882,7 @@ jobs:
           EOF
 
   # ─── GATE 3 — UNIT TESTS ──────────────────────────────────────────────────
-  # dbt unit tests against the deployment-manifest model name list with mocked YAML inputs.
-  # Runs in Fabric ephemeral workspace after Gate 2 succeeds (parallel with Gates 4 and 5).
-  # get_columns_in_relation() resolves against real tables Gate 2 has materialised + provisioned source shortcuts.
-  # See docs/adr/0002-gate-3-after-gate-2.md.
+  # dbt unit tests on the GHA runner via dbt-fabricspark CLI auth (AC-11).
   gate-3-unit:
     name: "ci/unit-tests: unit tests"
     needs: [provision-workspace, gate-2-write]
@@ -897,12 +894,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.head_ref }}
 
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - run: pip install pyyaml --quiet
+      - name: Install dbt-fabricspark
+        run: pip install pyyaml "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
 
       - run: mkdir -p reports
 
@@ -913,21 +913,28 @@ jobs:
           client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
           allow-no-subscriptions: true
 
+      - name: Download deployment manifest
+        uses: actions/download-artifact@v8
+        with:
+          name: deployment-manifest-${{ github.event.pull_request.head.sha }}
+          path: reports/
+
       - name: Run Gate 3
         if: needs.gate-2-write.result == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
-          python3 ${{ env.SCRIPTS }}/gate_runner.py run-gate \
-            --gate 3 \
+          python3 ${{ env.SCRIPTS }}/gate3_fabric_runner.py run-gate \
             --workspace-id "${{ needs.provision-workspace.outputs.ephemeral_workspace_id }}" \
+            --workspace-name "${{ needs.preflight.outputs.ephemeral_name }}" \
             --lakehouse-id "${{ needs.provision-workspace.outputs.ephemeral_lakehouse_id }}" \
-            --notebook-id "${{ needs.provision-workspace.outputs.notebook_id }}" \
+            --lakehouse-name "${{ needs.provision-workspace.outputs.lakehouse_name }}" \
             --head-sha "${{ github.event.pull_request.head.sha }}" \
+            --deployment-manifest "reports/deployment-manifest-${{ github.event.pull_request.head.sha }}.json" \
+            --profiles-dir .github/profiles \
             --output reports/gate-3.json
 
       - name: Upload Gate 3 report
@@ -948,7 +955,7 @@ jobs:
         run: |
           python3 - <<'PYEOF'
           import json, os, sys
-          sys.path.insert(0, os.environ["SCRIPTS"])
+          sys.path.insert(0, ".github/scripts")
           import pr_comment, notify_render
           try:
               with open("reports/gate-3.json") as f:
@@ -959,9 +966,8 @@ jobs:
           pr_comment.upsert(notify_render.GATE_3_MARKER, body, os.environ["PR_NUMBER"], os.environ["REPO"])
           PYEOF
 
-  # ─── GATE 2 — WRITE ───────────────────────────────────────────────────────
-  # Triggers the injected notebook via Fabric Item Jobs API, polls until
-  # terminal, downloads gate-2.json, emits ci/run commit status.
+  # ─── GATE 2 — ISOLATED BUILD ──────────────────────────────────────────────
+  # dbt clone + dbt run on the GHA runner via dbt-fabricspark CLI auth (AC-11).
   gate-2-write:
     name: "ci/run: isolated build"
     needs: [preflight, provision-workspace, fetch-prod-state]
@@ -973,12 +979,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.head_ref }}
 
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - run: pip install pyyaml --quiet
+      - name: Install dbt-fabricspark
+        run: pip install pyyaml "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
+
+      - run: mkdir -p reports
 
       - name: Login — Fabric UAMI
         uses: azure/login@v3
@@ -986,6 +997,19 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
           allow-no-subscriptions: true
+
+      - name: Download prod-state artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: prod-state-pr${{ github.event.pull_request.number }}
+          path: prod-state/
+        continue-on-error: true
+
+      - name: Download deployment manifest
+        uses: actions/download-artifact@v8
+        with:
+          name: deployment-manifest-${{ github.event.pull_request.head.sha }}
+          path: reports/
 
       - name: Run Gate 2
         env:
@@ -995,12 +1019,15 @@ jobs:
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
-          python3 ${{ env.SCRIPTS }}/gate_runner.py run-gate \
-            --gate 2 \
+          python3 ${{ env.SCRIPTS }}/gate2_fabric_runner.py run-gate \
             --workspace-id "${{ needs.provision-workspace.outputs.ephemeral_workspace_id }}" \
+            --workspace-name "${{ needs.preflight.outputs.ephemeral_name }}" \
             --lakehouse-id "${{ needs.provision-workspace.outputs.ephemeral_lakehouse_id }}" \
-            --notebook-id "${{ needs.provision-workspace.outputs.notebook_id }}" \
+            --lakehouse-name "${{ needs.provision-workspace.outputs.lakehouse_name }}" \
             --head-sha "${{ github.event.pull_request.head.sha }}" \
+            --deployment-manifest "reports/deployment-manifest-${{ github.event.pull_request.head.sha }}.json" \
+            --prod-state-dir prod-state \
+            --profiles-dir .github/profiles \
             --output reports/gate-2.json
 
       - name: Post gate-2 comment
@@ -1025,8 +1052,7 @@ jobs:
           EOF
 
   # ─── GATE 4 — DATA TESTS ─────────────────────────────────────────────────
-  # Triggers dbt test --store-failures via Fabric Item Jobs API after Gate 2.
-  # Skipped (no ci/data-tests status emitted) when Gate 2 fails.
+  # dbt test --store-failures on the GHA runner via dbt-fabricspark CLI auth (AC-11).
   gate-4-data-test:
     name: "ci/data-tests: data tests"
     needs: [provision-workspace, gate-2-write]
@@ -1038,12 +1064,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.head_ref }}
 
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - run: pip install pyyaml --quiet
+      - name: Install dbt-fabricspark
+        run: pip install pyyaml "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
+
+      - run: mkdir -p reports
 
       - name: Login — Fabric UAMI
         uses: azure/login@v3
@@ -1052,21 +1083,36 @@ jobs:
           client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
           allow-no-subscriptions: true
 
+      - name: Download prod-state artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: prod-state-pr${{ github.event.pull_request.number }}
+          path: prod-state/
+        continue-on-error: true
+
+      - name: Download deployment manifest
+        uses: actions/download-artifact@v8
+        with:
+          name: deployment-manifest-${{ github.event.pull_request.head.sha }}
+          path: reports/
+
       - name: Run Gate 4
         if: needs.gate-2-write.result == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
-          python3 ${{ env.SCRIPTS }}/gate_runner.py run-gate \
-            --gate 4 \
+          python3 ${{ env.SCRIPTS }}/gate4_fabric_runner.py run-gate \
             --workspace-id "${{ needs.provision-workspace.outputs.ephemeral_workspace_id }}" \
+            --workspace-name "${{ needs.preflight.outputs.ephemeral_name }}" \
             --lakehouse-id "${{ needs.provision-workspace.outputs.ephemeral_lakehouse_id }}" \
-            --notebook-id "${{ needs.provision-workspace.outputs.notebook_id }}" \
+            --lakehouse-name "${{ needs.provision-workspace.outputs.lakehouse_name }}" \
             --head-sha "${{ github.event.pull_request.head.sha }}" \
+            --deployment-manifest "reports/deployment-manifest-${{ github.event.pull_request.head.sha }}.json" \
+            --prod-state-dir prod-state \
+            --profiles-dir .github/profiles \
             --output reports/gate-4.json
 
       - name: Post gate-4 comment
@@ -1090,8 +1136,8 @@ jobs:
           EOF
 
   # ─── GATE 5 — DATA-DIFF ─────────────────────────────────────────────────────
-  # Triggers data-diff vs prod via Fabric Item Jobs API after Gate 2.
-  # Skipped (no ci/data-diff status emitted) when Gate 2 fails.
+  # Livy SQL diff from the GHA runner via dbt-fabricspark CLI auth (AC-11).
+  # Label-binding evaluation and final ci/data-diff status remain in the step below.
   gate-5-data-diff:
     name: "data-diff job"
     needs: [provision-workspace, gate-2-write]
@@ -1103,12 +1149,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.head_ref }}
 
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - run: pip install pyyaml --quiet
+      - name: Install dbt-fabricspark
+        run: pip install pyyaml "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
+
+      - run: mkdir -p reports
 
       - name: Login — Fabric UAMI
         uses: azure/login@v3
@@ -1116,6 +1167,12 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
           allow-no-subscriptions: true
+
+      - name: Download deployment manifest
+        uses: actions/download-artifact@v8
+        with:
+          name: deployment-manifest-${{ github.event.pull_request.head.sha }}
+          path: reports/
 
       - name: Run Gate 5
         if: needs.gate-2-write.result == 'success'
@@ -1127,14 +1184,17 @@ jobs:
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
-          python3 ${{ env.SCRIPTS }}/gate_runner.py run-gate \
-            --gate 5 \
+          python3 ${{ env.SCRIPTS }}/gate5_fabric_runner.py run-gate \
             --workspace-id "${{ needs.provision-workspace.outputs.ephemeral_workspace_id }}" \
+            --workspace-name "${{ needs.preflight.outputs.ephemeral_name }}" \
             --lakehouse-id "${{ needs.provision-workspace.outputs.ephemeral_lakehouse_id }}" \
-            --notebook-id "${{ needs.provision-workspace.outputs.notebook_id }}" \
+            --lakehouse-name "${{ needs.provision-workspace.outputs.lakehouse_name }}" \
+            --prod-workspace-name "${{ needs.preflight.outputs.prod_workspace_name }}" \
+            --prod-lakehouse-name "${{ needs.preflight.outputs.prod_lakehouse_name }}" \
+            --prod-schema "${{ needs.preflight.outputs.prod_schema }}" \
             --head-sha "${{ github.event.pull_request.head.sha }}" \
-            --output reports/gate-5.json \
-            --no-emit-final
+            --deployment-manifest "reports/deployment-manifest-${{ github.event.pull_request.head.sha }}.json" \
+            --output reports/gate-5.json
 
       - name: Evaluate diff-acknowledged binding and emit ci/data-diff status
         if: always() && needs.gate-2-write.result == 'success'

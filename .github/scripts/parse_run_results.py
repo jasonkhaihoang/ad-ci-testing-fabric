@@ -2,6 +2,13 @@
 
 Shared by Gate 3 (unit tests) and Gate 4 (data tests).
 
+Thin interfaces (see CONTEXT.md#architecture-vocabulary):
+    summarize               — normalise raw run_results dict into a summary dict
+    parse_run_results       — read a run_results.json file and return a summary dict
+    check_store_failures_config — inspect a parsed dbt_project.yml dict for store-failures config
+    gate_4_overall_status   — derive three-state overall status from a list of test result dicts
+    parse_data_test_results — Gate 4 variant of summarize with three-state overall_status
+
 Output schema written to --output:
     {
       "overall_status": "pass" | "fail",
@@ -24,6 +31,14 @@ import json
 import sys
 
 import runner_io
+
+__all__ = [
+    "summarize",
+    "parse_run_results",
+    "check_store_failures_config",
+    "gate_4_overall_status",
+    "parse_data_test_results",
+]
 
 _FAILURE_CAP = 10
 
@@ -78,6 +93,43 @@ def summarize(run_results: dict) -> dict:
         "truncated": truncated,
         "tests": tests,
     }
+
+
+def check_store_failures_config(dbt_project: dict | None) -> bool:
+    """Return True if a parsed dbt_project.yml dict enables `tests: +store_failures: true`
+    and `+store_failures_as: table`. Missing/invalid input → False.
+
+    Fabric Gate 4 previously read the YAML file path; the shared interface accepts the
+    parsed dict so the shell owns YAML I/O.
+    """
+    if not isinstance(dbt_project, dict):
+        return False
+    tests = dbt_project.get("tests")
+    if not isinstance(tests, dict):
+        return False
+    return bool(tests.get("+store_failures")) and tests.get("+store_failures_as") == "table"
+
+
+def gate_4_overall_status(tests: list) -> str:
+    """Derive overall status from a list of test result dicts.
+
+    Precedence: any error → 'error'; any fail → 'fail'; else 'pass' (skips and empty pass).
+    """
+    has_error = any(t.get("status") == "error" for t in tests)
+    if has_error:
+        return "error"
+    has_fail = any(t.get("status") == "fail" for t in tests)
+    return "fail" if has_fail else "pass"
+
+
+def parse_data_test_results(run_results: dict) -> dict:
+    """Parse dbt `run_results.json` for Gate 4 (`dbt test --store-failures`).
+
+    Same shape as `summarize`, but overall_status is three-state: error precedes fail.
+    """
+    summary = summarize(run_results)
+    summary["overall_status"] = gate_4_overall_status(summary["tests"])
+    return summary
 
 
 def parse_run_results(path: str) -> dict:
