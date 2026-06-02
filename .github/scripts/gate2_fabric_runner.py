@@ -108,7 +108,7 @@ def cmd_run_gate(args) -> int:
             "dbt", "clone", "--select", select_str,
             "--profiles-dir", profiles_dir, "--profile", PROFILE,
             "--target", TARGET, "--target-path", "target/clone",
-        ], env=env)
+        ] + defer_args, env=env)
         try:
             with open("target/clone/run_results.json") as f:
                 clone_run_results = json.load(f)
