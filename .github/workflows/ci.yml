@@ -920,7 +920,7 @@ jobs:
           path: reports/
 
       - name: Run Gate 3
-        if: needs.gate-2-write.result == 'success'
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -1097,7 +1097,7 @@ jobs:
           path: reports/
 
       - name: Run Gate 4
-        if: needs.gate-2-write.result == 'success'
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -1175,7 +1175,7 @@ jobs:
           path: reports/
 
       - name: Run Gate 5
-        if: needs.gate-2-write.result == 'success'
+        if: always()
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1197,7 +1197,7 @@ jobs:
             --output reports/gate-5.json
 
       - name: Evaluate diff-acknowledged binding and emit ci/data-diff status
-        if: always() && needs.gate-2-write.result == 'success'
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
