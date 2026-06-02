@@ -356,6 +356,13 @@ jobs:
           client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
           allow-no-subscriptions: true
 
+      - name: Diagnose — Fabric token acquisition
+        run: |
+          echo "=== az account show ==="
+          az account show 2>&1 || echo "(no account)"
+          echo "=== az account get-access-token --resource https://api.fabric.microsoft.com ==="
+          az account get-access-token --resource https://api.fabric.microsoft.com 2>&1 && echo "TOKEN OK" || echo "TOKEN FAILED (exit $?)"
+
       - name: Emit ci/provision pending
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
