@@ -1,0 +1,35 @@
+version: 2
+
+models:
+  - name: dim_opportunity_stage
+    config:
+      meta:
+        owner: jason.khai.hoang@acceleratedata.ai
+    description: |
+      Dimension table for sales opportunity stages.
+      One row per distinct stage name — captures stage ordering and closed/won flags.
+    columns:
+      - name: stage_name
+        description: Name of the sales stage
+        data_type: string
+        tests:
+          - unique
+          - not_null
+
+      - name: stage_order
+        description: Numeric ordering for funnel progression (1=early, 5=closed)
+        data_type: integer
+        tests:
+          - not_null
+
+      - name: is_closed_stage
+        description: True when the stage represents a terminal state (Closed Won or Closed Lost)
+        data_type: boolean
+        tests:
+          - not_null
+
+      - name: is_won_stage
+        description: True only for Closed Won stage
+        data_type: boolean
+        tests:
+          - not_null
