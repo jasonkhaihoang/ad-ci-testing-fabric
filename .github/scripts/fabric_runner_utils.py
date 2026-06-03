@@ -10,6 +10,20 @@ import pathlib
 import shutil
 
 
+def mat_map_from_manifest(deployment_manifest_path: str) -> dict[str, str]:
+    """Return {model_name: materialized} from the deployment manifest."""
+    try:
+        with open(deployment_manifest_path) as f:
+            dm = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {
+        (a.get("name", "").split(".")[-1] or a.get("name", "")): a.get("materialized", "")
+        for a in dm.get("artifacts") or []
+        if a.get("name")
+    }
+
+
 def select_names(deployment_manifest_path: str) -> list[str]:
     """Extract leaf model names from the deployment manifest, excluding ephemeral."""
     try:
