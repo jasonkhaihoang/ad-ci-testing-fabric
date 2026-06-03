@@ -1,0 +1,16 @@
+version: 2
+
+models:
+  - name: dim_vd2332_won_opportunities
+    config:
+      meta:
+        owner: jason.khai.hoang@acceleratedata.ai
+    description: |
+      VD-2332 validation model. Won opportunities for AC-2 gate 2 materialization check.
+    columns:
+      - name: opportunity_id
+        description: Unique identifier for the won opportunity
+        data_type: string
+        tests:
+          - unique
+          - not_null
