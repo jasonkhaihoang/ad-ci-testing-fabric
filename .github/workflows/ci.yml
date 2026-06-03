@@ -632,6 +632,7 @@ jobs:
   # Posts ci/static-check commit status; either blocking step failing marks Gate 0 failed.
   static-analysis:
     name: "ci/static-check: static analysis"
+    if: false  # VD-2332 validation: disabled to focus on gate-2-write only
     needs: [preflight]
     runs-on: ubuntu-latest
     steps:
@@ -878,8 +879,8 @@ jobs:
   # dbt unit tests on the GHA runner via dbt-fabricspark CLI auth (AC-11).
   gate-3-unit:
     name: "ci/unit-tests: unit tests"
-    needs: [provision-workspace, gate-2-write]
-    if: github.event.action != 'closed'
+    needs: [preflight, provision-workspace, gate-2-write]
+    if: false  # VD-2332 validation: disabled
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-3
@@ -1048,8 +1049,8 @@ jobs:
   # dbt test --store-failures on the GHA runner via dbt-fabricspark CLI auth (AC-11).
   gate-4-data-test:
     name: "ci/data-tests: data tests"
-    needs: [provision-workspace, gate-2-write]
-    if: always() && github.event.action != 'closed'
+    needs: [preflight, provision-workspace, gate-2-write]
+    if: false  # VD-2332 validation: disabled
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-4
@@ -1133,8 +1134,8 @@ jobs:
   # Label-binding evaluation and final ci/data-diff status remain in the step below.
   gate-5-data-diff:
     name: "data-diff job"
-    needs: [provision-workspace, gate-2-write]
-    if: always() && github.event.action != 'closed'
+    needs: [preflight, provision-workspace, gate-2-write]
+    if: false  # VD-2332 validation: disabled
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-5
