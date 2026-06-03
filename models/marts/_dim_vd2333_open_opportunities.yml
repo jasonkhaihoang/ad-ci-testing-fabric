@@ -1,0 +1,16 @@
+version: 2
+
+models:
+  - name: dim_vd2333_open_opportunities
+    config:
+      meta:
+        owner: jason.khai.hoang@acceleratedata.ai
+    description: |
+      Dimension of open (non-closed) opportunities. VD-2333 validation model.
+    columns:
+      - name: opportunity_id
+        description: Unique identifier for the opportunity
+        data_type: string
+        tests:
+          - unique
+          - not_null
