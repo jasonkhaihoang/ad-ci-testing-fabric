@@ -122,6 +122,7 @@ def cmd_run_gate(args) -> int:
         else:
             subprocess.run([
                 "dbt", "clone", "--select", select_str,
+                "--exclude", "config.materialized:view",
                 "--profiles-dir", profiles_dir, "--profile", PROFILE,
                 "--target", TARGET, "--target-path", "target/clone",
             ] + defer_args, env=env)
