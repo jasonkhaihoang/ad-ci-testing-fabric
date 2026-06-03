@@ -24,7 +24,7 @@ dispatch:
 
 models:
   sales_pipeline:
-    +workspace_name: vibedata_prd_sales_pipeline
+    +workspace_name: "{{ env_var('PROD_WORKSPACE_NAME', '') }}"
     staging:
       +materialized: view
       +schema: stg
