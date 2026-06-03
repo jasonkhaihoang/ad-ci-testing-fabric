@@ -435,6 +435,19 @@ def render_gate_2(result: dict | None) -> str:
             + "\n\n</details>\n"
         )
 
+    # AC-10: Developer surfaces (MotherDuck Dive + local dbt snippet)
+    dive_url = result.get("dive_url")
+    local_dbt_snippet = result.get("local_dbt_snippet")
+    if dive_url:
+        dive_line = (
+            f"🔍 **[Explore in MotherDuck Dive]({dive_url})** "
+            "— zero-setup data exploration, no token or install required.\n"
+        )
+        snippet_block = ""
+        if local_dbt_snippet:
+            snippet_block = f"\n🖥️ **Run dbt locally:**\n\n```bash\n{local_dbt_snippet}\n```\n"
+        sections.append(f"\n### Developer surfaces\n\n{dive_line}{snippet_block}")
+
     return "".join(sections)
 
 

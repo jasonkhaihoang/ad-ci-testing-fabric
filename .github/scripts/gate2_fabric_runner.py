@@ -40,6 +40,8 @@ def _model_rows(run_results: dict | None) -> tuple[str, list[dict]]:
     rows = []
     all_ok = True
     for r in results:
+        if not r.get("unique_id", "").startswith("model."):
+            continue
         status = r.get("status", "error")
         ok = status in ("success", "pass", "clone")
         if not ok:
@@ -104,28 +106,42 @@ def cmd_run_gate(args) -> int:
         build_run_results = {"results": []}
     else:
         select_str = " ".join(names)
-        subprocess.run([
-            "dbt", "clone", "--select", select_str,
-            "--profiles-dir", profiles_dir, "--profile", PROFILE,
-            "--target", TARGET, "--target-path", "target/clone",
-        ], env=env)
-        try:
-            with open("target/clone/run_results.json") as f:
-                clone_run_results = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            pass
-
-        if clone_run_results and _model_rows(clone_run_results)[0] == "pass":
+        if not defer_args:
+            # Greenfield: no prod manifest → skip clone, run full build directly against source shortcuts
+            clone_run_results = {"results": []}
             subprocess.run([
                 "dbt", "run", "--select", select_str,
                 "--profiles-dir", profiles_dir, "--profile", PROFILE,
                 "--target", TARGET, "--target-path", "target/build",
-            ] + defer_args, env=env)
+            ], env=env)
             try:
                 with open("target/build/run_results.json") as f:
                     build_run_results = json.load(f)
             except (OSError, json.JSONDecodeError):
                 pass
+        else:
+            subprocess.run([
+                "dbt", "clone", "--select", select_str,
+                "--profiles-dir", profiles_dir, "--profile", PROFILE,
+                "--target", TARGET, "--target-path", "target/clone",
+            ] + defer_args, env=env)
+            try:
+                with open("target/clone/run_results.json") as f:
+                    clone_run_results = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                pass
+
+            if clone_run_results and _model_rows(clone_run_results)[0] == "pass":
+                subprocess.run([
+                    "dbt", "run", "--select", select_str,
+                    "--profiles-dir", profiles_dir, "--profile", PROFILE,
+                    "--target", TARGET, "--target-path", "target/build",
+                ] + defer_args, env=env)
+                try:
+                    with open("target/build/run_results.json") as f:
+                        build_run_results = json.load(f)
+                except (OSError, json.JSONDecodeError):
+                    pass
 
     result = assemble_gate2_result(head_sha, clone_run_results, build_run_results)
     _write_gate_result(args.output, result)
