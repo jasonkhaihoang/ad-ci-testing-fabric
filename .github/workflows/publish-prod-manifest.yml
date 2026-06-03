@@ -78,32 +78,6 @@ jobs:
           dbt parse --profiles-dir /tmp/prod-profiles --target prod_manifest --quiet
           cp target/manifest.json /tmp/prod-manifests/manifest_prod.json
 
-      - name: Stamp workspace_name onto manifest_prod.json nodes
-        run: |
-          python3 - <<'PYEOF'
-          import json, yaml
-
-          with open("ci-config.yml") as f:
-              config = yaml.safe_load(f) or {}
-          workspace_name = config.get("prod_workspace_name", "")
-          if not workspace_name:
-              print("prod_workspace_name missing from ci-config.yml — skipping workspace stamp", flush=True)
-              exit(0)
-
-          with open("/tmp/prod-manifests/manifest_prod.json") as f:
-              manifest = json.load(f)
-
-          stamped = 0
-          for node in manifest.get("nodes", {}).values():
-              node.setdefault("config", {})["workspace_name"] = workspace_name
-              stamped += 1
-
-          with open("/tmp/prod-manifests/manifest_prod.json", "w") as f:
-              json.dump(manifest, f, separators=(",", ":"))
-
-          print(f"Stamped workspace_name={workspace_name!r} onto {stamped} manifest nodes", flush=True)
-          PYEOF
-
       - name: Upload prod-manifest artifact
         uses: actions/upload-artifact@v7
         with:

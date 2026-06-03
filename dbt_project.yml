@@ -24,6 +24,7 @@ dispatch:
 
 models:
   sales_pipeline:
+    +workspace_name: vibedata_prd_sales_pipeline
     staging:
       +materialized: view
       +schema: stg
