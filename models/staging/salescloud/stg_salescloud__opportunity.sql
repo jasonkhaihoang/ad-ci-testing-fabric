@@ -56,4 +56,3 @@ renamed as (
 select * from renamed
 
 -- VD-2229 validation bump
--- VD-2332 validation bump (retry after 4-part manifest fix)
