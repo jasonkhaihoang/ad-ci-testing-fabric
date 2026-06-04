@@ -13,10 +13,10 @@ banded as (
         annual_revenue,
 
         case
-            when annual_revenue is null      then 'Unknown'
-            when annual_revenue < 1000000    then 'SMB (<1M)'
-            when annual_revenue < 10000000   then 'Mid-Market (1–10M)'
-            when annual_revenue < 100000000  then 'Enterprise (10–100M)'
+            when annual_revenue is null then 'Unknown'
+            when annual_revenue < 1000000 then 'SMB (<1M)'
+            when annual_revenue < 10000000 then 'Mid-Market (1–10M)'
+            when annual_revenue < 100000000 then 'Enterprise (10–100M)'
             else 'Large Enterprise (>100M)'
         end as revenue_band
 
