@@ -3,10 +3,9 @@
 # Self-contained — all scripts live in .github/scripts/ within this repo.
 # Domain configuration: ci-config.yml in the repo root.
 #
-# Authentication: GitHub OIDC — per-domain SPN, no credentials stored (AC-31).
-# Required GitHub Variables (set at repo level):
-#   AZURE_TENANT_ID, AZURE_CLIENT_ID, DOMAIN_SLUG
-#   AZURE_KEYVAULT_URL (Key Vault — removed in AC-33)
+# Authentication: GitHub OIDC — two UAMIs, no credentials stored.
+# Required GitHub Variables (set at org or repo level):
+#   AZURE_TENANT_ID, AZURE_KV_CLIENT_ID, AZURE_FABRIC_CLIENT_ID, AZURE_KEYVAULT_URL
 #   GH_APP_ID_KV_NAME, GH_INSTALLATION_ID_KV_NAME, GH_APP_PEM_KV_NAME
 #   FABRIC_CAPACITY_ID_KV_NAME  (optional — defaults to "vibedata-fabric-capacity-id")
 #   AAD_DOMAIN  (optional — UPN domain for PR author lookup, defaults to eng.acceleratedata.ai)
@@ -50,7 +49,6 @@ jobs:
       prod_schema: ${{ steps.preflight.outputs.prod_schema }}
       ci_target: ${{ steps.preflight.outputs.ci_target }}
       intent_slug: ${{ steps.preflight.outputs.intent_slug }}
-      domain_slug: ${{ steps.preflight.outputs.domain_slug }}
       ephemeral_name: ${{ steps.names.outputs.ephemeral_name }}
     steps:
       - uses: actions/checkout@v5
@@ -109,7 +107,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          DOMAIN_SLUG: ${{ vars.DOMAIN_SLUG }}
         run: |
           mkdir -p reports
           python3 ${{ env.SCRIPTS }}/preflight.py \
@@ -248,12 +245,12 @@ jobs:
           print(f"prod_manifest_source.mode={mode}")
           EOF
 
-      - name: Login — per-domain SPN (onelake mode only)
+      - name: Login — Fabric UAMI (onelake mode only)
         if: steps.parse-mode.outputs.mode == 'onelake'
         uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
           allow-no-subscriptions: true
 
       - name: Fetch prod state
@@ -339,11 +336,11 @@ jobs:
 
       - run: pip install pyyaml --quiet
 
-      - name: Login — per-domain SPN
+      - name: Login — KV UAMI
         uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          client-id: ${{ vars.AZURE_KV_CLIENT_ID }}
           allow-no-subscriptions: true
 
       - name: Fetch Fabric capacity ID from Key Vault
@@ -351,6 +348,13 @@ jobs:
           AZURE_KEYVAULT_URL: ${{ vars.AZURE_KEYVAULT_URL }}
           FABRIC_CAPACITY_ID_KV_NAME: ${{ vars.FABRIC_CAPACITY_ID_KV_NAME }}
         run: python3 ${{ env.SCRIPTS }}/kv_utils.py fetch-fabric
+
+      - name: Login — Fabric UAMI
+        uses: azure/login@v3
+        with:
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
+          allow-no-subscriptions: true
 
       - name: Emit ci/provision pending
         env:
@@ -553,19 +557,24 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+      - name: Zip and upload dbt project to ephemeral OneLake
+        id: upload-dbt-project
+        run: |
+          zip -r /tmp/project.zip . --exclude ".git/*"
+          python3 ${{ env.SCRIPTS }}/fabric_api.py upload-file \
+            --workspace-id "${{ steps.provision.outputs.workspace_id }}" \
+            --lakehouse-id "${{ steps.provision.outputs.lakehouse_id }}" \
+            --local-path /tmp/project.zip \
+            --remote-path "Files/ci-artifacts/dbt-project/${{ github.event.pull_request.head.sha }}/project.zip"
+
       - name: Deploy interactive notebook
         id: generate-notebook
         env:
-          AZURE_KEYVAULT_URL: ${{ vars.AZURE_KEYVAULT_URL }}
           EPHEMERAL_WORKSPACE_ID: ${{ steps.provision.outputs.workspace_id }}
           EPHEMERAL_WORKSPACE_NAME: ${{ needs.preflight.outputs.ephemeral_name }}
           EPHEMERAL_LAKEHOUSE_ID: ${{ steps.provision.outputs.lakehouse_id }}
-          HEAD_BRANCH: ${{ github.head_ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          REPO_URL: ${{ github.event.repository.clone_url }}
-          GH_APP_ID_KV_NAME: ${{ vars.GH_APP_ID_KV_NAME }}
-          GH_INSTALLATION_ID_KV_NAME: ${{ vars.GH_INSTALLATION_ID_KV_NAME }}
-          GH_APP_PEM_KV_NAME: ${{ vars.GH_APP_PEM_KV_NAME }}
+          PROJECT_ZIP_ABFSS: ${{ steps.upload-dbt-project.outputs.abfss_path }}
           PROD_STATE_ABFSS: ${{ steps.upload-prod-state.outputs.abfss_path }}
           CI_TARGET: ${{ needs.preflight.outputs.ci_target }}
           PROD_WORKSPACE_NAME: ${{ needs.preflight.outputs.prod_workspace_name }}
@@ -874,7 +883,7 @@ jobs:
   # dbt unit tests on the GHA runner via dbt-fabricspark CLI auth (AC-11).
   gate-3-unit:
     name: "ci/unit-tests: unit tests"
-    needs: [preflight, provision-workspace, gate-2-write]
+    needs: [provision-workspace, gate-2-write]
     if: false  # VD-2358: disabled
     timeout-minutes: 130
     concurrency:
@@ -895,11 +904,11 @@ jobs:
 
       - run: mkdir -p reports
 
-      - name: Login — per-domain SPN
+      - name: Login — Fabric UAMI
         uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
           allow-no-subscriptions: true
 
       - name: Download deployment manifest
@@ -980,11 +989,11 @@ jobs:
 
       - run: mkdir -p reports
 
-      - name: Login — per-domain SPN
+      - name: Login — Fabric UAMI
         uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
           allow-no-subscriptions: true
 
       - name: Download prod-state artifact
@@ -1044,7 +1053,7 @@ jobs:
   # dbt test --store-failures on the GHA runner via dbt-fabricspark CLI auth (AC-11).
   gate-4-data-test:
     name: "ci/data-tests: data tests"
-    needs: [preflight, provision-workspace, gate-2-write]
+    needs: [provision-workspace, gate-2-write]
     if: false  # VD-2358: disabled
     timeout-minutes: 130
     concurrency:
@@ -1065,11 +1074,11 @@ jobs:
 
       - run: mkdir -p reports
 
-      - name: Login — per-domain SPN
+      - name: Login — Fabric UAMI
         uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
           allow-no-subscriptions: true
 
       - name: Download prod-state artifact
@@ -1129,7 +1138,7 @@ jobs:
   # Label-binding evaluation and final ci/data-diff status remain in the step below.
   gate-5-data-diff:
     name: "data-diff job"
-    needs: [preflight, provision-workspace, gate-2-write]
+    needs: [provision-workspace, gate-2-write]
     if: false  # VD-2358: disabled
     timeout-minutes: 130
     concurrency:
@@ -1150,11 +1159,11 @@ jobs:
 
       - run: mkdir -p reports
 
-      - name: Login — per-domain SPN
+      - name: Login — Fabric UAMI
         uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
           allow-no-subscriptions: true
 
       - name: Download deployment manifest
