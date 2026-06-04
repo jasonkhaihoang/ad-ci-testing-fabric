@@ -26,19 +26,23 @@ stage_metrics as (
         sum(
             case
                 when is_closed = true and is_won = true
-                then amount
+                    then amount
                 else 0
             end
         ) as won_revenue,
 
         sum(
-            case when is_closed = false then amount else 0 end
+            case
+                when is_closed = false
+                    then amount
+                else 0
+            end
         ) as open_pipeline,
 
         avg(
             case
                 when is_closed = true and days_in_current_stage is not null
-                then days_in_current_stage
+                    then days_in_current_stage
             end
         ) as avg_days_in_stage
 

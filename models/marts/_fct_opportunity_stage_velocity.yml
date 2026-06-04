@@ -1,0 +1,46 @@
+version: 2
+
+models:
+  - name: fct_opportunity_stage_velocity
+    description: |
+      Fact table aggregating opportunity metrics by pipeline stage.
+      Reports counts (won/lost/open), revenue totals, and average days in stage for each Salesforce stage.
+    meta:
+      owner: "@jasonkhaihoang"
+    columns:
+      - name: stage_name
+        description: Salesforce opportunity stage name
+        data_type: string
+        tests:
+          - unique
+          - not_null
+
+      - name: total_opportunities
+        description: Total number of opportunities that entered this stage
+        data_type: bigint
+        tests:
+          - not_null
+
+      - name: won_count
+        description: Count of closed-won opportunities
+        data_type: bigint
+
+      - name: lost_count
+        description: Count of closed-lost opportunities
+        data_type: bigint
+
+      - name: open_count
+        description: Count of currently open opportunities in this stage
+        data_type: bigint
+
+      - name: won_revenue
+        description: Total revenue from closed-won opportunities
+        data_type: double
+
+      - name: open_pipeline
+        description: Total pipeline value of open opportunities
+        data_type: double
+
+      - name: avg_days_in_stage
+        description: Average days closed opportunities spent in this stage
+        data_type: double
