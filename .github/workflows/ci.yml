@@ -553,24 +553,19 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-      - name: Zip and upload dbt project to ephemeral OneLake
-        id: upload-dbt-project
-        run: |
-          zip -r /tmp/project.zip . --exclude ".git/*"
-          python3 ${{ env.SCRIPTS }}/fabric_api.py upload-file \
-            --workspace-id "${{ steps.provision.outputs.workspace_id }}" \
-            --lakehouse-id "${{ steps.provision.outputs.lakehouse_id }}" \
-            --local-path /tmp/project.zip \
-            --remote-path "Files/ci-artifacts/dbt-project/${{ github.event.pull_request.head.sha }}/project.zip"
-
       - name: Deploy interactive notebook
         id: generate-notebook
         env:
+          AZURE_KEYVAULT_URL: ${{ vars.AZURE_KEYVAULT_URL }}
           EPHEMERAL_WORKSPACE_ID: ${{ steps.provision.outputs.workspace_id }}
           EPHEMERAL_WORKSPACE_NAME: ${{ needs.preflight.outputs.ephemeral_name }}
           EPHEMERAL_LAKEHOUSE_ID: ${{ steps.provision.outputs.lakehouse_id }}
+          HEAD_BRANCH: ${{ github.head_ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PROJECT_ZIP_ABFSS: ${{ steps.upload-dbt-project.outputs.abfss_path }}
+          REPO_URL: ${{ github.event.repository.clone_url }}
+          GH_APP_ID_KV_NAME: ${{ vars.GH_APP_ID_KV_NAME }}
+          GH_INSTALLATION_ID_KV_NAME: ${{ vars.GH_INSTALLATION_ID_KV_NAME }}
+          GH_APP_PEM_KV_NAME: ${{ vars.GH_APP_PEM_KV_NAME }}
           PROD_STATE_ABFSS: ${{ steps.upload-prod-state.outputs.abfss_path }}
           CI_TARGET: ${{ needs.preflight.outputs.ci_target }}
           PROD_WORKSPACE_NAME: ${{ needs.preflight.outputs.prod_workspace_name }}
@@ -880,7 +875,7 @@ jobs:
   gate-3-unit:
     name: "ci/unit-tests: unit tests"
     needs: [preflight, provision-workspace, gate-2-write]
-    if: false  # VD-2358: disabled
+    if: github.event.action != 'closed'
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-3
@@ -965,7 +960,7 @@ jobs:
   gate-2-write:
     name: "ci/run: isolated build"
     needs: [preflight, provision-workspace, fetch-prod-state]
-    if: false  # VD-2358: disabled
+    if: github.event.action != 'closed'
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-2
@@ -1050,7 +1045,7 @@ jobs:
   gate-4-data-test:
     name: "ci/data-tests: data tests"
     needs: [preflight, provision-workspace, gate-2-write]
-    if: false  # VD-2358: disabled
+    if: always() && github.event.action != 'closed'
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-4
@@ -1135,7 +1130,7 @@ jobs:
   gate-5-data-diff:
     name: "data-diff job"
     needs: [preflight, provision-workspace, gate-2-write]
-    if: false  # VD-2358: disabled
+    if: always() && github.event.action != 'closed'
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-5
