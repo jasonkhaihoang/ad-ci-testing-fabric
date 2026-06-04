@@ -10,17 +10,51 @@ import pathlib
 import shutil
 
 
-def select_names(deployment_manifest_path: str) -> list[str]:
-    """Extract leaf model names from the deployment manifest, excluding ephemeral."""
+def _load_artifacts(deployment_manifest_path: str) -> list[dict]:
+    """Load the artifact list from the deployment manifest, or [] on read error."""
     try:
         with open(deployment_manifest_path) as f:
             dm = json.load(f)
     except (OSError, json.JSONDecodeError):
         return []
+    return dm.get("artifacts") or []
+
+
+def _leaf_name(artifact: dict) -> str:
+    name = artifact.get("name", "")
+    return name.split(".")[-1] or name
+
+
+def mat_map_from_manifest(deployment_manifest_path: str) -> dict[str, str]:
+    """Return {model_name: materialized} from the deployment manifest."""
+    return {
+        _leaf_name(a): a.get("materialized", "")
+        for a in _load_artifacts(deployment_manifest_path)
+        if a.get("name")
+    }
+
+
+def select_names(deployment_manifest_path: str) -> list[str]:
+    """Extract leaf model names from the deployment manifest, excluding ephemeral."""
     return [
-        (a.get("name", "").split(".")[-1] or a.get("name", ""))
-        for a in dm.get("artifacts") or []
+        _leaf_name(a)
+        for a in _load_artifacts(deployment_manifest_path)
         if a.get("name") and a.get("materialized") != "ephemeral"
+    ]
+
+
+def select_clone_names(deployment_manifest_path: str) -> list[str]:
+    """Clone-eligible leaf names: non-ephemeral and non-view.
+
+    Views cannot be shallow-cloned — dbt clone falls back to running the view
+    materialization, which the fabricspark macro renders as CREATE VIEW against a
+    2-part prod ref that fails in the ephemeral workspace (VD-2336). Views are
+    built by the subsequent `dbt run --defer` instead, so they are dropped here.
+    """
+    return [
+        _leaf_name(a)
+        for a in _load_artifacts(deployment_manifest_path)
+        if a.get("name") and a.get("materialized") not in ("ephemeral", "view")
     ]
 
 

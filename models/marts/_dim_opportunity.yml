@@ -1,0 +1,86 @@
+version: 2
+
+models:
+  - name: dim_opportunity
+    config:
+      meta:
+        owner: jason.khai.hoang@acceleratedata.ai
+    description: |
+      Opportunity dimension table for the sales pipeline mart.
+      One row per non-deleted opportunity, enriched with fiscal time dimensions.
+      VD-2370 validation model.
+    columns:
+      - name: opportunity_id
+        description: Primary key — unique Salesforce opportunity identifier
+        data_type: string
+        tests:
+          - unique
+          - not_null
+
+      - name: account_id
+        description: Foreign key to dim_account
+        data_type: string
+        tests:
+          - not_null
+
+      - name: owner_id
+        description: Foreign key to the owning sales rep
+        data_type: string
+        tests:
+          - not_null
+
+      - name: opportunity_name
+        description: Name/title of the opportunity
+        data_type: string
+
+      - name: stage_name
+        description: Current sales stage
+        data_type: string
+        tests:
+          - not_null
+
+      - name: amount
+        description: Total monetary value
+        data_type: decimal
+
+      - name: probability
+        description: Likelihood of closing (0-100%)
+        data_type: integer
+
+      - name: expected_revenue
+        description: Calculated expected revenue
+        data_type: decimal
+
+      - name: created_date
+        description: When the opportunity was created
+        data_type: timestamp
+        tests:
+          - not_null
+
+      - name: close_date
+        description: Expected or actual close date
+        data_type: date
+
+      - name: is_closed
+        description: Whether the opportunity is closed
+        data_type: boolean
+        tests:
+          - not_null
+
+      - name: is_won
+        description: Whether the opportunity was won
+        data_type: boolean
+        tests:
+          - not_null
+
+      - name: fiscal_quarter
+        description: Fiscal quarter of the close date
+        data_type: string
+
+      - name: fiscal_year
+        description: Fiscal year of the close date
+        data_type: integer
+
+      - name: last_modified_date
+        description: Timestamp of last modification
+        data_type: timestamp
