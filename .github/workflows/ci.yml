@@ -5,7 +5,7 @@
 #
 # Authentication: GitHub OIDC — two UAMIs, no credentials stored.
 # Required GitHub Variables (set at org or repo level):
-#   AZURE_TENANT_ID, AZURE_KV_CLIENT_ID, AZURE_FABRIC_CLIENT_ID, AZURE_KEYVAULT_URL
+#   AZURE_TENANT_ID, AZURE_KV_CLIENT_ID, AZURE_CLIENT_ID, AZURE_KEYVAULT_URL
 #   GH_APP_ID_KV_NAME, GH_INSTALLATION_ID_KV_NAME, GH_APP_PEM_KV_NAME
 #   FABRIC_CAPACITY_ID_KV_NAME  (optional — defaults to "vibedata-fabric-capacity-id")
 #   AAD_DOMAIN  (optional — UPN domain for PR author lookup, defaults to eng.acceleratedata.ai)
@@ -250,7 +250,7 @@ jobs:
         uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
           allow-no-subscriptions: true
 
       - name: Fetch prod state
@@ -353,7 +353,7 @@ jobs:
         uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
           allow-no-subscriptions: true
 
       - name: Emit ci/provision pending
@@ -903,7 +903,7 @@ jobs:
         uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
           allow-no-subscriptions: true
 
       - name: Download deployment manifest
@@ -988,7 +988,7 @@ jobs:
         uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
           allow-no-subscriptions: true
 
       - name: Download prod-state artifact
@@ -1073,7 +1073,7 @@ jobs:
         uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
           allow-no-subscriptions: true
 
       - name: Download prod-state artifact
@@ -1158,7 +1158,7 @@ jobs:
         uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
           allow-no-subscriptions: true
 
       - name: Download deployment manifest
