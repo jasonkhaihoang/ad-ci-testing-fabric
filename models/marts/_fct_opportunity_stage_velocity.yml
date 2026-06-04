@@ -41,6 +41,6 @@ models:
         description: Total pipeline value of open opportunities
         data_type: double
 
-      - name: avg_days_in_stage
-        description: Average days closed opportunities spent in this stage
+      - name: avg_closed_amount
+        description: Average amount of closed opportunities in this stage
         data_type: double

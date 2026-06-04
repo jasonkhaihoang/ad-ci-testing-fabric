@@ -41,10 +41,10 @@ stage_metrics as (
 
         avg(
             case
-                when is_closed = true and days_in_current_stage is not null
-                    then days_in_current_stage
+                when is_closed = true
+                    then amount
             end
-        ) as avg_days_in_stage
+        ) as avg_closed_amount
 
     from opportunities
     group by stage_name
