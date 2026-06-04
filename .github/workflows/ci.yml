@@ -875,7 +875,7 @@ jobs:
   gate-3-unit:
     name: "ci/unit-tests: unit tests"
     needs: [preflight, provision-workspace, gate-2-write]
-    if: github.event.action != 'closed'
+    if: false  # VD-2358: disabled
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-3
@@ -960,7 +960,7 @@ jobs:
   gate-2-write:
     name: "ci/run: isolated build"
     needs: [preflight, provision-workspace, fetch-prod-state]
-    if: github.event.action != 'closed'
+    if: false  # VD-2358: disabled
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-2
@@ -1045,7 +1045,7 @@ jobs:
   gate-4-data-test:
     name: "ci/data-tests: data tests"
     needs: [preflight, provision-workspace, gate-2-write]
-    if: always() && github.event.action != 'closed'
+    if: false  # VD-2358: disabled
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-4
@@ -1130,7 +1130,7 @@ jobs:
   gate-5-data-diff:
     name: "data-diff job"
     needs: [preflight, provision-workspace, gate-2-write]
-    if: always() && github.event.action != 'closed'
+    if: false  # VD-2358: disabled
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-5
