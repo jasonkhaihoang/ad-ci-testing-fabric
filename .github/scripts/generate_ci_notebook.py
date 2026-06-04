@@ -1,7 +1,7 @@
 """
 CI notebook deployer.
 
-Reads the bundled ci-transient-notebook.ipynb template, injects the Parameters
+Reads the bundled ci-interactive-notebook.ipynb template, injects the Parameters
 cell with runtime values, patches the lakehouse metadata, and uploads to the
 ephemeral Fabric workspace via the Items API.
 
@@ -11,9 +11,8 @@ owned by domain-cicd, not the domain repo.
 Environment variables required:
   EPHEMERAL_WORKSPACE_ID, EPHEMERAL_WORKSPACE_NAME
   EPHEMERAL_LAKEHOUSE_ID, EPHEMERAL_LAKEHOUSE_NAME (optional, defaults to vdephelh)
-  HEAD_BRANCH, HEAD_SHA, REPO_URL
-  GH_APP_ID_KV_NAME, GH_INSTALLATION_ID_KV_NAME, GH_APP_PEM_KV_NAME
-  AZURE_KEYVAULT_URL
+  HEAD_SHA
+  PROJECT_ZIP_ABFSS  — AC-32: ABFSS URI of the dbt project zip uploaded to OneLake Files
   PROD_STATE_ABFSS (optional, falls back to ./prod-state)
   CI_TARGET (optional, defaults to ephemeral_ci)
   CI_RUN_ID (optional, defaults to "")
@@ -41,13 +40,8 @@ def build_parameters_cell_source(
     workspace_name: str,
     lakehouse_id: str,
     lakehouse_name: str,
-    head_branch: str,
     head_sha: str,
-    repo_url: str,
-    github_app_id: str,
-    github_installation_id: str,
-    github_pem_secret: str,
-    vault_url: str,
+    project_zip_abfss: str,
     ci_run_id: str,
     ci_target: str,
     prod_state_path: str,
@@ -58,20 +52,16 @@ def build_parameters_cell_source(
 ) -> list[str]:
     """Build the Parameters cell source lines from already-fetched values.
 
+    AC-32: emits project_zip_abfss (OneLake zip path); no GitHub App / vault fields.
     Returns scalar string assignments only — no f-string commands.
-    The template's Cell 3 (Command assembly) builds dbt command strings at
-    notebook runtime using local_prod_state_path, which is set by Cell 2.
+    The template's command-assembly cell builds dbt command strings at
+    notebook runtime using local_prod_state_path, which is set by the prod-state cell.
     """
     return [
         "# Parameters — injected by CI (do not edit manually)\n",
         f'ci_target = "{ci_target}"\n',
         f'prod_state_path = "{prod_state_path}"\n',
-        f'repo_url = "{repo_url}"\n',
-        f'repo_branch = "{head_branch}"\n',
-        f'github_app_id = "{github_app_id}"\n',
-        f'github_installation_id = "{github_installation_id}"\n',
-        f'github_pem_secret = "{github_pem_secret}"\n',
-        f'vault_url = "{vault_url}"\n',
+        f'project_zip_abfss = "{project_zip_abfss}"\n',
         f'lakehouse_name = "{lakehouse_name}"\n',
         f'lakehouse_id = "{lakehouse_id}"\n',
         f'workspace_id = "{workspace_id}"\n',
@@ -239,15 +229,12 @@ def main(interactive_path: Path | None = None) -> None:
     workspace_name = os.environ["EPHEMERAL_WORKSPACE_NAME"]
     lakehouse_id = os.environ["EPHEMERAL_LAKEHOUSE_ID"]
     lakehouse_name = os.environ.get("EPHEMERAL_LAKEHOUSE_NAME", "vdephelh")
-    head_branch = os.environ["HEAD_BRANCH"]
     head_sha = os.environ["HEAD_SHA"].strip()
     if not head_sha:
         raise ValueError("HEAD_SHA environment variable is empty — cannot build session ID file path")
-    repo_url = os.environ["REPO_URL"]
-    github_app_id = os.environ.get("GH_APP_ID_KV_NAME", "")
-    github_installation_id = os.environ.get("GH_INSTALLATION_ID_KV_NAME", "")
-    github_pem_secret = os.environ.get("GH_APP_PEM_KV_NAME", "")
-    vault_url = os.environ.get("AZURE_KEYVAULT_URL", "")
+    project_zip_abfss = os.environ.get("PROJECT_ZIP_ABFSS", "").strip()
+    if not project_zip_abfss:
+        raise ValueError("PROJECT_ZIP_ABFSS is empty — upload-dbt-project step must set abfss_path before notebook deploy")
     ci_run_id = os.environ.get("CI_RUN_ID", "").strip()
     ci_target = os.environ.get("CI_TARGET", "").strip() or "ephemeral_ci"
 
@@ -262,13 +249,8 @@ def main(interactive_path: Path | None = None) -> None:
         workspace_name=workspace_name,
         lakehouse_id=lakehouse_id,
         lakehouse_name=lakehouse_name,
-        head_branch=head_branch,
         head_sha=head_sha,
-        repo_url=repo_url,
-        github_app_id=github_app_id,
-        github_installation_id=github_installation_id,
-        github_pem_secret=github_pem_secret,
-        vault_url=vault_url,
+        project_zip_abfss=project_zip_abfss,
         ci_run_id=ci_run_id,
         ci_target=ci_target,
         prod_state_path=prod_state_abfss,
