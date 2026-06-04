@@ -7,7 +7,6 @@
 # Required GitHub Variables (set at repo level):
 #   AZURE_TENANT_ID, AZURE_CLIENT_ID, DOMAIN_SLUG
 #   AZURE_KEYVAULT_URL (Key Vault — removed in AC-33)
-#   GH_APP_ID_KV_NAME, GH_INSTALLATION_ID_KV_NAME, GH_APP_PEM_KV_NAME
 #   FABRIC_CAPACITY_ID_KV_NAME  (optional — defaults to "vibedata-fabric-capacity-id")
 #   AAD_DOMAIN  (optional — UPN domain for PR author lookup, defaults to eng.acceleratedata.ai)
 
