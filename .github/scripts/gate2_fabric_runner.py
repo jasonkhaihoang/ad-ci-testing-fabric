@@ -12,7 +12,12 @@ import subprocess
 import sys
 
 import emit_status
-from fabric_runner_utils import select_names as _select_names, setup_defer as _setup_defer, write_gate_result as _write_gate_result
+from fabric_runner_utils import (
+    select_clone_names as _select_clone_names,
+    select_names as _select_names,
+    setup_defer as _setup_defer,
+    write_gate_result as _write_gate_result,
+)
 
 CONTEXT = "ci/run"
 PROFILE = "dbt_fab_spark"
@@ -87,7 +92,9 @@ def cmd_run_gate(args) -> int:
     }
 
     names = _select_names(args.deployment_manifest)
+    clone_names = _select_clone_names(args.deployment_manifest)
     defer_args = _setup_defer(args.prod_state_dir)
+    clone_state_args = [a for a in defer_args if a != "--defer"]
     profiles_dir = args.profiles_dir
 
     subprocess.run(
@@ -104,28 +111,49 @@ def cmd_run_gate(args) -> int:
         build_run_results = {"results": []}
     else:
         select_str = " ".join(names)
-        subprocess.run([
-            "dbt", "clone", "--select", select_str,
-            "--profiles-dir", profiles_dir, "--profile", PROFILE,
-            "--target", TARGET, "--target-path", "target/clone",
-        ], env=env)
-        try:
-            with open("target/clone/run_results.json") as f:
-                clone_run_results = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            pass
-
-        if clone_run_results and _model_rows(clone_run_results)[0] == "pass":
+        if not defer_args:
+            # Greenfield: no prod manifest → skip clone, run full build directly against source shortcuts
+            clone_run_results = {"results": []}
             subprocess.run([
                 "dbt", "run", "--select", select_str,
                 "--profiles-dir", profiles_dir, "--profile", PROFILE,
                 "--target", TARGET, "--target-path", "target/build",
-            ] + defer_args, env=env)
+            ], env=env)
             try:
                 with open("target/build/run_results.json") as f:
                     build_run_results = json.load(f)
             except (OSError, json.JSONDecodeError):
                 pass
+        else:
+            # Views cannot be shallow-cloned (dbt clone falls back to CREATE VIEW
+            # against a 2-part prod ref that fails in the ephemeral workspace — VD-2336).
+            # Clone only clone-eligible (non-view) models; dbt run --defer builds the
+            # full set, including views, fresh in the ephemeral workspace.
+            if clone_names:
+                subprocess.run([
+                    "dbt", "clone", "--select", " ".join(clone_names),
+                    "--profiles-dir", profiles_dir, "--profile", PROFILE,
+                    "--target", TARGET, "--target-path", "target/clone",
+                ] + clone_state_args, env=env)
+                try:
+                    with open("target/clone/run_results.json") as f:
+                        clone_run_results = json.load(f)
+                except (OSError, json.JSONDecodeError):
+                    pass
+            else:
+                clone_run_results = {"results": []}
+
+            if clone_run_results and _model_rows(clone_run_results)[0] == "pass":
+                subprocess.run([
+                    "dbt", "run", "--select", select_str,
+                    "--profiles-dir", profiles_dir, "--profile", PROFILE,
+                    "--target", TARGET, "--target-path", "target/build",
+                ] + defer_args, env=env)
+                try:
+                    with open("target/build/run_results.json") as f:
+                        build_run_results = json.load(f)
+                except (OSError, json.JSONDecodeError):
+                    pass
 
     result = assemble_gate2_result(head_sha, clone_run_results, build_run_results)
     _write_gate_result(args.output, result)

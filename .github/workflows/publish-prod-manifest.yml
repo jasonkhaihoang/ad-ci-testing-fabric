@@ -64,12 +64,6 @@ jobs:
               yaml.dump(profiles, f)
 
           print(f"prod_manifest target: {profile_name} → {workspace_name}.{lakehouse}.{schema}", flush=True)
-
-          github_env = os.environ.get("GITHUB_ENV", "")
-          if github_env:
-              with open(github_env, "a") as _f:
-                  _f.write(f"PROD_WORKSPACE_NAME={workspace_name}\n")
-              print(f"PROD_WORKSPACE_NAME={workspace_name} written to GITHUB_ENV", flush=True)
           PYEOF
 
       - name: Parse dbt project — compile target
@@ -80,8 +74,6 @@ jobs:
           cp target/manifest.json /tmp/prod-manifests/manifest.json
 
       - name: Parse dbt project — prod target
-        env:
-          PROD_WORKSPACE_NAME: ${{ env.PROD_WORKSPACE_NAME }}
         run: |
           dbt parse --profiles-dir /tmp/prod-profiles --target prod_manifest --quiet
           cp target/manifest.json /tmp/prod-manifests/manifest_prod.json
