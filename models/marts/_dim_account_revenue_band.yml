@@ -1,0 +1,40 @@
+version: 2
+
+models:
+  - name: dim_account_revenue_band
+    description: |
+      Dimension table classifying accounts into revenue bands based on annual_revenue.
+      Used for segmentation analysis across SMB, Mid-Market, Enterprise, and Large Enterprise tiers.
+    meta:
+      owner: "@jasonkhaihoang"
+    columns:
+      - name: account_id
+        description: Unique identifier for the account
+        data_type: string
+        tests:
+          - unique
+          - not_null
+
+      - name: account_name
+        description: Name of the account
+        data_type: string
+        tests:
+          - not_null
+
+      - name: account_type
+        description: Type classification of the account
+        data_type: string
+
+      - name: industry
+        description: Industry vertical of the account
+        data_type: string
+
+      - name: annual_revenue
+        description: Annual revenue in USD from Salesforce
+        data_type: float
+
+      - name: revenue_band
+        description: Categorical revenue tier — SMB, Mid-Market, Enterprise, Large Enterprise, or Unknown
+        data_type: string
+        tests:
+          - not_null

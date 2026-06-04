@@ -6,6 +6,8 @@ models:
       Staging model for Salesforce accounts representing customers and prospects.
       Provides a 1:1 mapping with the source Salesforce Account object,
       applying column renaming and excluding soft-deleted records.
+    meta:
+      owner: "@jasonkhaihoang"
     columns:
       - name: account_id
         description: Unique identifier for the account (Salesforce ID)
@@ -61,3 +63,7 @@ models:
       - name: last_modified_date
         description: Timestamp of last modification to this account
         data_type: timestamp
+
+      - name: annual_revenue
+        description: Annual revenue of the account in USD as reported in Salesforce
+        data_type: float
