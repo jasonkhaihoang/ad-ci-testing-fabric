@@ -11,3 +11,4 @@ if os.path.isdir(_shared) and _shared not in sys.path:
     sys.path.insert(0, _shared)
 
 __path__ = pkgutil.extend_path(__path__, __name__)
+
