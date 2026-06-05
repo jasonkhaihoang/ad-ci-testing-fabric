@@ -12,7 +12,13 @@ import subprocess
 import sys
 
 import emit_status
-from fabric_runner_utils import select_names as _select_names, setup_defer as _setup_defer, write_gate_result as _write_gate_result
+from fabric_runner_utils import (
+    mat_map_from_manifest as _mat_map_from_manifest,
+    select_clone_names as _select_clone_names,
+    select_names as _select_names,
+    setup_defer as _setup_defer,
+    write_gate_result as _write_gate_result,
+)
 
 CONTEXT = "ci/run"
 PROFILE = "dbt_fab_spark"
@@ -30,7 +36,10 @@ def _post(head_sha: str, state: str, description: str) -> None:
         emit_status.emit_status(repo, head_sha, CONTEXT, state, description, _run_url())
 
 
-def _model_rows(run_results: dict | None) -> tuple[str, list[dict]]:
+def _model_rows(
+    run_results: dict | None,
+    mat_map: dict[str, str] | None = None,
+) -> tuple[str, list[dict]]:
     """Extract (status, models) from a dbt run_results dict."""
     if run_results is None:
         return "fail", []
@@ -40,16 +49,21 @@ def _model_rows(run_results: dict | None) -> tuple[str, list[dict]]:
     rows = []
     all_ok = True
     for r in results:
+        if not r.get("unique_id", "").startswith("model."):
+            continue
         status = r.get("status", "error")
         ok = status in ("success", "pass", "clone")
         if not ok:
             all_ok = False
         msg = (r.get("message") or "")[:500] or None
+        name = r.get("unique_id", "").split(".")[-1]
+        node_mat = (r.get("node") or {}).get("config", {}).get("materialized", "")
         rows.append({
-            "name": r.get("unique_id", "").split(".")[-1],
+            "name": name,
             "status": status,
             "duration_seconds": round(float(r.get("execution_time", 0.0)), 3),
             "error_message": msg,
+            "materialization": node_mat or (mat_map or {}).get(name, ""),
         })
     return ("pass" if all_ok else "fail"), rows
 
@@ -58,10 +72,11 @@ def assemble_gate2_result(
     head_sha: str,
     clone_run_results: dict | None,
     build_run_results: dict | None,
+    mat_map: dict[str, str] | None = None,
 ) -> dict:
     """Pure: assemble gate-2.json from dbt clone and dbt run run_results dicts."""
-    clone_status, clone_models = _model_rows(clone_run_results)
-    build_status, build_models = _model_rows(build_run_results)
+    clone_status, clone_models = _model_rows(clone_run_results, mat_map)
+    build_status, build_models = _model_rows(build_run_results, mat_map)
     overall = "pass" if clone_status == "pass" and build_status == "pass" else "fail"
     return {
         "gate": "2",
@@ -87,6 +102,8 @@ def cmd_run_gate(args) -> int:
     }
 
     names = _select_names(args.deployment_manifest)
+    clone_names = _select_clone_names(args.deployment_manifest)
+    mat_map = _mat_map_from_manifest(args.deployment_manifest)
     defer_args = _setup_defer(args.prod_state_dir)
     profiles_dir = args.profiles_dir
 
@@ -104,30 +121,51 @@ def cmd_run_gate(args) -> int:
         build_run_results = {"results": []}
     else:
         select_str = " ".join(names)
-        subprocess.run([
-            "dbt", "clone", "--select", select_str,
-            "--profiles-dir", profiles_dir, "--profile", PROFILE,
-            "--target", TARGET, "--target-path", "target/clone",
-        ], env=env)
-        try:
-            with open("target/clone/run_results.json") as f:
-                clone_run_results = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            pass
-
-        if clone_run_results and _model_rows(clone_run_results)[0] == "pass":
+        if not defer_args:
+            # Greenfield: no prod manifest → skip clone, run full build directly against source shortcuts
+            clone_run_results = {"results": []}
             subprocess.run([
                 "dbt", "run", "--select", select_str,
                 "--profiles-dir", profiles_dir, "--profile", PROFILE,
                 "--target", TARGET, "--target-path", "target/build",
-            ] + defer_args, env=env)
+            ], env=env)
             try:
                 with open("target/build/run_results.json") as f:
                     build_run_results = json.load(f)
             except (OSError, json.JSONDecodeError):
                 pass
+        else:
+            # Views cannot be shallow-cloned (dbt clone falls back to CREATE VIEW
+            # against a 2-part prod ref that fails in the ephemeral workspace — VD-2336).
+            # Clone only clone-eligible (non-view) models; dbt run --defer builds the
+            # full set, including views, fresh in the ephemeral workspace.
+            if clone_names:
+                subprocess.run([
+                    "dbt", "clone", "--select", " ".join(clone_names),
+                    "--profiles-dir", profiles_dir, "--profile", PROFILE,
+                    "--target", TARGET, "--target-path", "target/clone",
+                ] + defer_args, env=env)
+                try:
+                    with open("target/clone/run_results.json") as f:
+                        clone_run_results = json.load(f)
+                except (OSError, json.JSONDecodeError):
+                    pass
+            else:
+                clone_run_results = {"results": []}
 
-    result = assemble_gate2_result(head_sha, clone_run_results, build_run_results)
+            if clone_run_results and _model_rows(clone_run_results)[0] == "pass":
+                subprocess.run([
+                    "dbt", "run", "--select", select_str,
+                    "--profiles-dir", profiles_dir, "--profile", PROFILE,
+                    "--target", TARGET, "--target-path", "target/build",
+                ] + defer_args, env=env)
+                try:
+                    with open("target/build/run_results.json") as f:
+                        build_run_results = json.load(f)
+                except (OSError, json.JSONDecodeError):
+                    pass
+
+    result = assemble_gate2_result(head_sha, clone_run_results, build_run_results, mat_map)
     _write_gate_result(args.output, result)
 
     gh_state = "success" if result["overall_status"] == "pass" else "failure"
