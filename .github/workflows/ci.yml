@@ -193,7 +193,7 @@ jobs:
   # Modes: artifact (gh run download from CD), onelake (Fabric UAMI), greenfield (dbt parse fallback).
   fetch-prod-state:
     name: "ci/state-modified+: fetch prod state"
-    if: false
+    if: github.event.action != 'closed'
     needs: preflight
     runs-on: ubuntu-latest
     outputs:
