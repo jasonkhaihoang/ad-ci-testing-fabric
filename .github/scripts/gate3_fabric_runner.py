@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 import emit_status
-from fabric_runner_utils import select_names as _select_names, write_gate_result as _write_gate_result
+from fabric_runner_utils import select_names as _select_names, setup_defer as _setup_defer, write_gate_result as _write_gate_result
 from parse_run_results import summarize
 
 CONTEXT = "ci/unit-tests"
@@ -43,6 +43,7 @@ def cmd_run_gate(args) -> int:
 
     names = _select_names(args.deployment_manifest)
     profiles_dir = args.profiles_dir
+    defer_args = _setup_defer(args.prod_state_dir)
 
     subprocess.run(
         ["dbt", "deps", "--profiles-dir", profiles_dir, "--profile", PROFILE,
@@ -64,7 +65,7 @@ def cmd_run_gate(args) -> int:
             "dbt", "test", "--select", select_arg,
             "--profiles-dir", profiles_dir, "--profile", PROFILE,
             "--target", TARGET, "--target-path", "target/unit",
-        ], env=env)
+        ] + defer_args, env=env)
 
         run_results: dict | None = None
         try:
