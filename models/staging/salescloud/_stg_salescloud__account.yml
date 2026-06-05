@@ -2,6 +2,9 @@ version: 2
 
 models:
   - name: stg_salescloud__account
+    config:
+      meta:
+        owner: jason.khai.hoang@acceleratedata.ai
     description: |
       Staging model for Salesforce accounts representing customers and prospects.
       Provides a 1:1 mapping with the source Salesforce Account object,
