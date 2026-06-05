@@ -1,0 +1,90 @@
+version: 2
+
+models:
+  - name: dim_vd2377_validation
+    config:
+      meta:
+        owner: jason.khai.hoang@acceleratedata.ai
+    description: |
+      VD-2377 validation model. New mrt model whose unit test references dim_user (an
+      unmodified TABLE) as a given input — exercises AC-33 where Gate 2 must clone the
+      unmodified TABLE before Gate 3 fixture introspection runs.
+    columns:
+      - name: opportunity_id
+        description: Primary key
+        data_type: string
+        tests:
+          - not_null
+
+      - name: owner_id
+        description: FK to dim_user
+        data_type: string
+
+      - name: owner_name
+        description: User name from dim_user
+        data_type: string
+
+      - name: owner_job_title
+        description: Job title from dim_user
+        data_type: string
+
+      - name: amount
+        description: Opportunity amount
+        data_type: float
+
+      - name: stage_name
+        description: Opportunity stage
+        data_type: string
+
+      - name: is_won
+        description: Whether the opportunity is won
+        data_type: boolean
+
+unit_tests:
+  - name: test_vd2377_owner_name_from_dim_user
+    description: >
+      AC-33 validation: unit test for dim_vd2377_validation references dim_user (an
+      unmodified TABLE) as a given input. Gate 2 must clone dim_user before Gate 3
+      runs so get_columns_in_relation() can resolve it.
+    model: dim_vd2377_validation
+    given:
+      - input: ref('stg_salescloud__opportunity')
+        rows:
+          - opportunity_id: OPP-AC33-001
+            account_id: ACC001
+            owner_id: USR001
+            opportunity_name: AC-33 Test Deal
+            stage_name: Prospecting
+            opportunity_type: New Business
+            lead_source: Web
+            amount: 10000
+            probability: 25
+            expected_revenue: 2500
+            created_date: "2026-01-01 09:00:00"
+            close_date: "2026-06-30"
+            last_stage_change_date: "2026-01-01 09:00:00"
+            is_closed: false
+            is_won: false
+            last_modified_date: "2026-01-01 09:00:00"
+            system_modified_timestamp: "2026-01-01 09:00:00"
+      - input: ref('dim_user')
+        rows:
+          - user_id: USR001
+            user_name: Jane Smith
+            email: jane.smith@example.com
+            username: jsmith
+            job_title: Account Executive
+            user_role_id: ROLE001
+            profile_id: PROF001
+            is_active: true
+            created_date: "2025-01-10 08:00:00"
+            last_modified_date: "2025-01-10 08:00:00"
+    expect:
+      rows:
+        - opportunity_id: OPP-AC33-001
+          owner_id: USR001
+          owner_name: Jane Smith
+          owner_job_title: Account Executive
+          amount: 10000
+          stage_name: Prospecting
+          is_won: false
