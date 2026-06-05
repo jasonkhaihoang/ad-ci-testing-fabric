@@ -17,7 +17,7 @@ on:
     branches: [main]
 
 concurrency:
-  group: ci-pr-${{ github.event.pull_request.number }}
+  group: ci-pr-${{ github.event.pull_request.number }}-vd2378
   cancel-in-progress: true
 
 permissions:
