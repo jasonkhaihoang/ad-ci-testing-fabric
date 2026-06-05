@@ -30,4 +30,4 @@ final as (
 )
 
 select * from final
--- VD-2375 validation: unit test references stg_salescloud__opportunity as unmodified view fixture
+-- VD-2375: unit test uses stg_salescloud__opportunity as unmodified view fixture
