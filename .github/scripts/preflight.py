@@ -176,6 +176,9 @@ def main() -> None:
                 out.write(f"{k}={v}\n")
             slug = result["intent"]["slug"]
             out.write(f"intent_slug={slug}\n")
+            domain_slug = os.environ.get("DOMAIN_SLUG", "")
+            if domain_slug:
+                out.write(f"domain_slug={domain_slug}\n")
         print(f"Config outputs written. intent_slug={slug}")
 
     if result["overall_status"] != "pass":
