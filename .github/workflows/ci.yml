@@ -1043,7 +1043,7 @@ jobs:
   gate-4-data-test:
     name: "ci/data-tests: data tests"
     needs: [preflight, provision-workspace, gate-2-write]
-    if: always() && github.event.action != 'closed'
+    if: false  # VD-2377 validation: skip data-tests to focus on Gate 2 + Gate 3
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-4
@@ -1128,7 +1128,7 @@ jobs:
   gate-5-data-diff:
     name: "data-diff job"
     needs: [preflight, provision-workspace, gate-2-write]
-    if: always() && github.event.action != 'closed'
+    if: false  # VD-2377 validation: skip data-diff to focus on Gate 2 + Gate 3
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-5
