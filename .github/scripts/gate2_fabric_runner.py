@@ -16,8 +16,6 @@ from fabric_runner_utils import (
     mat_map_from_manifest as _mat_map_from_manifest,
     select_clone_names as _select_clone_names,
     select_names as _select_names,
-    select_unit_test_table_inputs as _select_unit_test_table_inputs,
-    select_unit_test_view_inputs as _select_unit_test_view_inputs,
     setup_defer as _setup_defer,
     write_gate_result as _write_gate_result,
 )
@@ -166,32 +164,6 @@ def cmd_run_gate(args) -> int:
                         build_run_results = json.load(f)
                 except (OSError, json.JSONDecodeError):
                     pass
-
-                # Build unmodified view models referenced as unit test fixture given
-                # inputs so Gate 3's get_columns_in_relation() can resolve them (VD-2375).
-                view_inputs = _select_unit_test_view_inputs(
-                    "target/build/manifest.json", set(names)
-                )
-                if view_inputs:
-                    subprocess.run([
-                        "dbt", "run", "--select", " ".join(view_inputs),
-                        "--profiles-dir", profiles_dir, "--profile", PROFILE,
-                        "--target", TARGET, "--target-path", "target/build",
-                    ] + defer_args, env=env)
-
-                # Clone unmodified table/incremental/materialized_view models referenced
-                # as unit test fixture given inputs so Gate 3's get_columns_in_relation()
-                # can resolve them (VD-2377). Uses dbt clone (not dbt run) since these
-                # materializations are clone-eligible.
-                table_inputs = _select_unit_test_table_inputs(
-                    "target/build/manifest.json", set(names)
-                )
-                if table_inputs:
-                    subprocess.run([
-                        "dbt", "clone", "--select", " ".join(table_inputs),
-                        "--profiles-dir", profiles_dir, "--profile", PROFILE,
-                        "--target", TARGET, "--target-path", "target/clone-fixture",
-                    ] + defer_args, env=env)
 
     result = assemble_gate2_result(head_sha, clone_run_results, build_run_results, mat_map)
     _write_gate_result(args.output, result)
