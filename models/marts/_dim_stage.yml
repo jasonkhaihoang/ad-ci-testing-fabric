@@ -1,0 +1,36 @@
+version: 2
+
+models:
+  - name: dim_stage
+    config:
+      meta:
+        owner: jason.khai.hoang@acceleratedata.ai
+    description: |
+      Stage dimension table derived from the opportunity staging model.
+      One row per distinct sales stage, with ordering and classification flags.
+      Enables consistent stage-based slicing across pipeline fact models.
+    columns:
+      - name: stage_name
+        description: Name of the sales stage (primary key)
+        data_type: string
+        tests:
+          - unique
+          - not_null
+
+      - name: stage_order
+        description: Approximate ordinal position in the typical pipeline progression (1 = earliest, 99 = unknown)
+        data_type: integer
+        tests:
+          - not_null
+
+      - name: is_closed_stage
+        description: True if this stage represents a terminal closed state (Closed Won or Closed Lost)
+        data_type: boolean
+        tests:
+          - not_null
+
+      - name: is_won_stage
+        description: True only for the Closed Won stage
+        data_type: boolean
+        tests:
+          - not_null
