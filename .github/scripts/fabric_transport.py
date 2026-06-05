@@ -6,7 +6,7 @@ Public surface:
   request_long_running(method, path, body, audience='fabric', timeout_s=120, poll_interval_s=5) -> dict
   dfs_request(method, url, audience='storage', data=None, params=None) -> None
 
-Audiences: fabric, powerbi, storage, keyvault.
+Audiences: fabric, powerbi, storage.
 """
 from __future__ import annotations
 
@@ -25,7 +25,6 @@ _AUDIENCE_RESOURCE: dict[str, str] = {
     "fabric": "https://api.fabric.microsoft.com",
     "powerbi": "https://analysis.windows.net/powerbi/api",
     "storage": "https://storage.azure.com",
-    "keyvault": "https://vault.azure.net",
 }
 
 _AUDIENCE_BASE_URL: dict[str, str] = {

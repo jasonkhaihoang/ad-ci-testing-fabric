@@ -38,6 +38,7 @@ __all__ = [
     "check_store_failures_config",
     "gate_4_overall_status",
     "parse_data_test_results",
+    "enrich_tests_from_manifest",
 ]
 
 _FAILURE_CAP = 10
@@ -120,6 +121,24 @@ def gate_4_overall_status(tests: list) -> str:
         return "error"
     has_fail = any(t.get("status") == "fail" for t in tests)
     return "fail" if has_fail else "pass"
+
+
+def enrich_tests_from_manifest(tests: list, nodes: dict) -> list:
+    """Fill blank model names in a tests list using manifest.json node entries.
+
+    Each node entry that has an `attached_node` field (e.g. `model.<proj>.<name>`)
+    provides the parent model name for the matching test unique_id. Only blank model
+    fields are updated; already-populated entries (unit tests via __) are left unchanged.
+    """
+    lookup = {
+        uid: v.get("attached_node", "").split(".")[-1]
+        for uid, v in nodes.items()
+        if isinstance(v, dict) and v.get("attached_node")
+    }
+    return [
+        {**t, "model": t["model"] or lookup.get(t["name"], "")}
+        for t in tests
+    ]
 
 
 def parse_data_test_results(run_results: dict) -> dict:

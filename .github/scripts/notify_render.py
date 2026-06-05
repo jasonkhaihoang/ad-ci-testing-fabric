@@ -435,6 +435,19 @@ def render_gate_2(result: dict | None) -> str:
             + "\n\n</details>\n"
         )
 
+    # AC-10: Developer surfaces (MotherDuck Dive + local dbt snippet)
+    dive_url = result.get("dive_url")
+    local_dbt_snippet = result.get("local_dbt_snippet")
+    if dive_url:
+        dive_line = (
+            f"🔍 **[Explore in MotherDuck Dive]({dive_url})** "
+            "— zero-setup data exploration, no token or install required.\n"
+        )
+        snippet_block = ""
+        if local_dbt_snippet:
+            snippet_block = f"\n🖥️ **Run dbt locally:**\n\n```bash\n{local_dbt_snippet}\n```\n"
+        sections.append(f"\n### Developer surfaces\n\n{dive_line}{snippet_block}")
+
     return "".join(sections)
 
 
@@ -993,6 +1006,23 @@ def render_workspace_comment(
     if seeding_section:
         seeding_section = "\n" + seeding_section
     nb_link = f"\n**Notebook:** [Open in Fabric]({notebook_url})" if notebook_url else ""
+    if greenfield_fallback:
+        checklist = (
+            "- [ ] Open the workspace and run these notebook cells in order:\n"
+            "  1. **Run** — `dbt run --select state:modified+` (full build — no prod baseline to clone)\n"
+            "  2. **Unit Test** — `dbt test --select state:modified+,test_type:unit` (after Run — uses tables built in step 1)\n"
+            "  3. **Data Test** — `dbt test --select state:modified+ --store-failures`\n"
+            "- [ ] Note: `ci/data-diff` auto-passes in greenfield mode — no prod baseline to compare against\n"
+        )
+    else:
+        checklist = (
+            "- [ ] Open the workspace and run these notebook cells in order:\n"
+            "  1. **Clone** — shallow-clones prod tables into the ephemeral lakehouse\n"
+            "  2. **Run** — `dbt run --select state:modified+` (writes the modified set)\n"
+            "  3. **Unit Test** — `dbt test --select state:modified+,test_type:unit` (after Run — uses tables built in step 2)\n"
+            "  4. **Data Test** — `dbt test --select state:modified+ --store-failures`\n"
+            "- [ ] Note: `ci/data-diff` runs automatically in CI — no manual cell required\n"
+        )
     return f"""{COMMENT_MARKER}
 ## Ephemeral Workspace Ready (ci/provision-workspace)
 
@@ -1000,13 +1030,7 @@ def render_workspace_comment(
 **Branch:** `{head_branch}`{nb_link}
 {greenfield_notice}
 ### Developer Checklist
-- [ ] Open the workspace and run these notebook cells in order:
-  1. **Clone** — shallow-clones prod tables into the ephemeral lakehouse
-  2. **Run** — `dbt run --select state:modified+` (writes the modified set)
-  3. **Unit Test** — `dbt test --select state:modified+,test_type:unit` (after Run — uses tables built in step 2)
-  4. **Data Test** — `dbt test --select state:modified+ --store-failures`
-- [ ] Note: `ci/data-diff` runs automatically in CI — no manual cell required
-- [ ] Validate results meet the intent spec acceptance criteria
+{checklist}- [ ] Validate results meet the intent spec acceptance criteria
 - [ ] Mark PR ready for review
 
 > CI reports available as workflow artifacts.

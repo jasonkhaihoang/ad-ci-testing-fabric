@@ -35,11 +35,11 @@ jobs:
 
       - run: pip install requests pyyaml --quiet
 
-      - name: Login — Fabric UAMI
+      - name: Login — per-domain SPN
         uses: azure/login@v3
         with:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_FABRIC_CLIENT_ID }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
           allow-no-subscriptions: true
 
       - name: Delete orphaned ephemeral workspaces
