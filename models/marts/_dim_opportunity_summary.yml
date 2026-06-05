@@ -1,0 +1,95 @@
+version: 2
+
+models:
+  - name: dim_opportunity_summary
+    config:
+      meta:
+        owner: jason.khai.hoang@acceleratedata.ai
+    description: |
+      Opportunity forecast summary — one row per opportunity with a derived forecast_category.
+      References stg_salescloud__opportunity (a view) as its sole upstream source.
+      Unit test exercises VD-2375: Gate 2 must build unmodified view inputs for Gate 3 fixture introspection.
+    columns:
+      - name: opportunity_id
+        description: Unique identifier for the opportunity
+        data_type: string
+        tests:
+          - unique
+          - not_null
+      - name: forecast_category
+        description: Derived forecast classification based on probability and closed/won status
+        data_type: string
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Closed Won', 'Closed Lost', 'Best Case', 'Commit', 'Pipeline', 'Upside']
+
+unit_tests:
+  - name: test_forecast_category_classification
+    description: Validates forecast_category derivation for all probability bands and closed states.
+    model: dim_opportunity_summary
+    given:
+      - input: ref('stg_salescloud__opportunity')
+        rows:
+          - opportunity_id: "001"
+            opportunity_name: "Deal A"
+            stage_name: "Closed Won"
+            amount: 50000
+            probability: 100
+            is_closed: true
+            is_won: true
+            close_date: "2026-03-31"
+            fiscal_quarter: "Q1"
+            fiscal_year: 2026
+          - opportunity_id: "002"
+            opportunity_name: "Deal B"
+            stage_name: "Best Case"
+            amount: 30000
+            probability: 80
+            is_closed: false
+            is_won: false
+            close_date: "2026-06-30"
+            fiscal_quarter: "Q2"
+            fiscal_year: 2026
+          - opportunity_id: "003"
+            opportunity_name: "Deal C"
+            stage_name: "Commit"
+            amount: 20000
+            probability: 60
+            is_closed: false
+            is_won: false
+            close_date: "2026-09-30"
+            fiscal_quarter: "Q3"
+            fiscal_year: 2026
+          - opportunity_id: "004"
+            opportunity_name: "Deal D"
+            stage_name: "Pipeline"
+            amount: 10000
+            probability: 30
+            is_closed: false
+            is_won: false
+            close_date: "2026-12-31"
+            fiscal_quarter: "Q4"
+            fiscal_year: 2026
+          - opportunity_id: "005"
+            opportunity_name: "Deal E"
+            stage_name: "Upside"
+            amount: 5000
+            probability: 10
+            is_closed: false
+            is_won: false
+            close_date: "2026-12-31"
+            fiscal_quarter: "Q4"
+            fiscal_year: 2026
+    expect:
+      rows:
+        - opportunity_id: "001"
+          forecast_category: "Closed Won"
+        - opportunity_id: "002"
+          forecast_category: "Best Case"
+        - opportunity_id: "003"
+          forecast_category: "Commit"
+        - opportunity_id: "004"
+          forecast_category: "Pipeline"
+        - opportunity_id: "005"
+          forecast_category: "Upside"
