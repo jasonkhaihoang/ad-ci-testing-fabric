@@ -1,3 +1,4 @@
+-- ci-test marker
 {{ config(materialized='view') }}
 
 with source as (
