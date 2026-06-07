@@ -1,0 +1,17 @@
+version: 2
+
+models:
+  - name: dim_stage
+    config:
+      meta:
+        owner: jason.khai.hoang@acceleratedata.ai
+    description: |
+      Distinct sales stages derived from opportunity data.
+      Used as a reference dimension for pipeline stage filtering.
+    columns:
+      - name: stage_name
+        description: Name of the sales stage (e.g. Prospecting, Closed Won)
+        data_type: string
+        tests:
+          - unique
+          - not_null
