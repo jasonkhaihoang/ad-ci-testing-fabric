@@ -14,7 +14,7 @@ except ImportError:
 
 import emit_status
 from fabric_runner_utils import select_names as _select_names, setup_defer as _setup_defer, write_gate_result as _write_gate_result
-from parse_run_results import check_store_failures_config, parse_data_test_results
+from parse_run_results import check_store_failures_config, enrich_tests_from_manifest, parse_data_test_results
 
 CONTEXT = "ci/data-tests"
 PROFILE = "dbt_fab_spark"
@@ -30,6 +30,14 @@ def _post(head_sha: str, state: str, description: str) -> None:
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     if repo:
         emit_status.emit_status(repo, head_sha, CONTEXT, state, description, _run_url())
+
+
+def _load_manifest_nodes(path: str) -> dict:
+    try:
+        with open(path) as f:
+            return json.load(f).get("nodes", {})
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 def _load_dbt_project(path: str) -> dict:
@@ -90,6 +98,8 @@ def cmd_run_gate(args) -> int:
         return 1
 
     summary = parse_data_test_results(run_results)
+    manifest_nodes = _load_manifest_nodes("target/data-test/manifest.json")
+    summary["tests"] = enrich_tests_from_manifest(summary["tests"], manifest_nodes)
     summary["store_failures_config_ok"] = store_failures_config_ok
     summary.update({"gate": "4", "head_sha": head_sha})
 
