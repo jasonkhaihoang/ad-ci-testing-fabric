@@ -1,3 +1,4 @@
+-- ci-test marker
 {{ config(materialized='table') }}
 
 with opportunities as (
