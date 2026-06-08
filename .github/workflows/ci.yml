@@ -1163,7 +1163,6 @@ jobs:
 
       - name: Run Gate 5
         if: needs.gate-2-write.result == 'success'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}

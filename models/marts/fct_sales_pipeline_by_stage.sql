@@ -1,3 +1,4 @@
+-- ci-test marker
 {{ config(materialized='table') }}
 
 with opportunities as (
@@ -29,4 +30,4 @@ pipeline_by_stage as (
     group by stage_name, fiscal_year, fiscal_quarter
 )
 
-select * from pipeline_by_stage
+select *, 'ci-diff-test' as _ci_marker from pipeline_by_stage
