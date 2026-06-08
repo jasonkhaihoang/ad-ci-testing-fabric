@@ -873,7 +873,7 @@ jobs:
   gate-3-unit:
     name: "ci/unit-tests: unit tests"
     needs: [preflight, provision-workspace, gate-2-write]
-    if: false
+    if: github.event.action != 'closed'
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-3
@@ -1043,7 +1043,7 @@ jobs:
   gate-4-data-test:
     name: "ci/data-tests: data tests"
     needs: [preflight, provision-workspace, gate-2-write]
-    if: false
+    if: always() && github.event.action != 'closed'
     timeout-minutes: 130
     concurrency:
       group: pr-${{ github.event.pull_request.number }}-gate-4
@@ -1163,7 +1163,6 @@ jobs:
 
       - name: Run Gate 5
         if: needs.gate-2-write.result == 'success'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
