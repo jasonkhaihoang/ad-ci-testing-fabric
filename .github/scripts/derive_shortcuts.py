@@ -6,7 +6,9 @@ The output JSON is consumed by Slice 2's `fabric_api.py seed-shortcuts` subcomma
 
 Logic:
 1. Detect greenfield (`prod-state/source.json.mode == "greenfield"`, or sidecar
-   absent) → emit `[]` and zero_state="greenfield".
+   absent) → load `target/manifest.json` and emit shortcuts for every source.*
+   node (greenfield = no CI baseline, not no prod data; all sources need shortcuts
+   so Gate 2's full build can resolve {{ source() }} refs).
 2. Run `dbt ls --select state:modified+ --resource-type model snapshot
    --state ./prod-state --output json` to identify the build closure.
    Empty result → `[]` and zero_state="no-modified-models".
@@ -189,8 +191,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     prod_lakehouse_id = os.environ.get("PROD_LAKEHOUSE_ID", "")
 
     if _is_greenfield():
-        _emit_shortcuts([], args.output)
-        _write_report([], "greenfield")
+        manifest_data = _read_json("target/manifest.json") or {}
+        source_items = sorted((manifest_data.get("sources") or {}).items())
+        schema_enabled = _is_schema_enabled([n for _, n in source_items])
+        shortcuts = [
+            _shortcut_entry(node, uid, schema_enabled, prod_workspace_id, prod_lakehouse_id)
+            for uid, node in source_items
+        ]
+        _emit_shortcuts(shortcuts, args.output)
+        _write_report(shortcuts, "greenfield")
         return 0
 
     modified_ids = run_dbt_ls()

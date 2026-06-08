@@ -198,7 +198,7 @@ def post_workspace_comment_only():
     interactive_notebook_id = os.environ.get("INTERACTIVE_NOTEBOOK_ID", "")
     notebook_url = ""
     if interactive_notebook_id and workspace_id:
-        notebook_url = f"https://app.fabric.microsoft.com/groups/{workspace_id}/synapsenotebooks/{interactive_notebook_id}"
+        notebook_url = f"https://app.fabric.microsoft.com/groups/{workspace_id}/synapsenotebooks/{interactive_notebook_id}?experience=fabric-developer"
 
     if provision_failed:
         workspace_comment = render_provision_failed(

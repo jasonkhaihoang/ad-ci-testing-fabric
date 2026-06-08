@@ -63,8 +63,10 @@ def summarize(run_results: dict) -> dict:
 
     results = run_results.get("results") or []
     for r in results:
-        status = r.get("status")
         unique_id = r.get("unique_id", "")
+        if unique_id.startswith("operation."):
+            continue
+        status = r.get("status")
 
         if status in ("pass", "success"):
             norm = "pass"
@@ -88,7 +90,7 @@ def summarize(run_results: dict) -> dict:
 
     return {
         "overall_status": overall,
-        "total": len(results),
+        "total": len(tests),
         "counts": counts,
         "failures": failures[:_FAILURE_CAP],
         "truncated": truncated,
