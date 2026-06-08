@@ -1,3 +1,4 @@
+-- ci-test marker
 {{ config(materialized='table') }}
 -- ci-test: shortcut derivation scenario (VD-1700)
 
