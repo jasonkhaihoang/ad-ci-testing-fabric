@@ -1,32 +1,15 @@
 # E2E Incremental-Staging Design
 
-## Intent
-Validate CI pipeline behaviour when `stg_salescloud__opportunity` is modified, triggering full downstream closure.
+## Summary
+This PR makes a marker-only change to `stg_salescloud__opportunity` for CI test purposes. **No columns are added, removed, or renamed in any model.** No grain changes. No materialization changes. No unique_key changes. The only change is a code comment marker in the SQL file.
 
-## Modified models
+## Expected state:modified+ closure
+Exactly four models are expected:
 
-### stg_salescloud__opportunity
-Staging model: 1:1 with Salesforce Opportunity object, column rename + soft-delete exclusion.
-- Grain: opportunity_id (unique, not null)
-- Materialization: view
-- Key columns: opportunity_id, account_id, owner_id, stage_name, amount, close_date, is_closed, is_won, fiscal_year, fiscal_quarter
+1. **stg_salescloud__opportunity** — view, grain: opportunity_id, no structural changes
+2. **fct_pipeline** — table, unique_key: opportunity_id, no structural changes
+3. **fct_pipeline_monthly_product** — table, unique_key: [close_month, product_id], no structural changes
+4. **fct_sales_pipeline_by_stage** — table, grain: [stage_name, fiscal_year, fiscal_quarter], no structural changes
 
-### fct_pipeline
-Core sales pipeline fact. Joins staging opportunity with account and user dimensions.
-- Grain: opportunity_id (unique, not null)
-- Materialization: table
-- Unique key: opportunity_id
-- Key columns: opportunity_id, account_id, owner_id, stage_name, amount, weighted_amount, forecast_category, is_closed, is_won, close_date, account_name, owner_name, sales_cycle_days
-
-### fct_pipeline_monthly_product
-Monthly pipeline aggregated by product and close month.
-- Grain: (close_month, product_id) — combination unique
-- Materialization: table
-- Unique key: close_month, product_id
-- Key columns: close_month, product_id, product_name, total_revenue, won_revenue, opportunity_count, win_rate_pct
-
-### fct_sales_pipeline_by_stage
-Pipeline summary aggregated by sales stage, fiscal year, and fiscal quarter.
-- Grain: (stage_name, fiscal_year, fiscal_quarter)
-- Materialization: table
-- Key columns: stage_name, fiscal_year, fiscal_quarter, opportunity_count, won_count, lost_count, total_amount, weighted_amount, avg_probability
+## Drift assessment
+Since this is a marker-only change with no structural modifications, the correct finding is: **has_drift = false, findings = []**.
