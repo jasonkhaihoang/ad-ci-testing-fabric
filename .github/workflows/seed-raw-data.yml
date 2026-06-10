@@ -1,0 +1,87 @@
+name: Seed Raw Data
+
+on:
+  workflow_dispatch:
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # required for GitHub OIDC → Azure login
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dbt
+        run: pip install "dbt-core>=1.8" "dbt-fabricspark>=1.8" pyyaml --quiet
+
+      - name: Login — per-domain SPN
+        uses: azure/login@v3
+        with:
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Generate seed profile
+        run: |
+          python3 - <<'PYEOF'
+          import yaml, os, sys
+
+          with open("ci-config.yml") as f:
+              config = yaml.safe_load(f) or {}
+
+          workspace_id   = config.get("prod_workspace_id", "")
+          workspace_name = config.get("prod_workspace_name", "")
+          lakehouse_id   = config.get("prod_lakehouse_id", "")
+          lakehouse      = config.get("prod_lakehouse_name", "")
+
+          if not all([workspace_id, workspace_name, lakehouse_id, lakehouse]):
+              print("ci-config.yml missing prod workspace fields — aborting.", flush=True)
+              sys.exit(1)
+
+          with open(".github/profiles/profiles.yml") as f:
+              profiles = yaml.safe_load(f)
+
+          profile_name = next(iter(profiles))
+          profiles[profile_name]["outputs"]["prod_seed"] = {
+              "type": "fabricspark",
+              "method": "livy",
+              "authentication": "CLI",
+              "endpoint": "https://msitapi.fabric.microsoft.com/v1",
+              "workspaceid": workspace_id,
+              "workspace_name": workspace_name,
+              "lakehouse": lakehouse,
+              "lakehouseid": lakehouse_id,
+              "lakehouse_schemas_enabled": True,
+              "schema": "raw",
+              "spark_config": {"name": "dbt_seed_raw"},
+              "connect_retries": 2,
+              "connect_timeout": 500,
+              "threads": 4,
+          }
+
+          with open(".github/profiles/profiles.yml", "w") as f:
+              yaml.dump(profiles, f, default_flow_style=False)
+
+          print(f"Seed profile written — target: {workspace_name}/{lakehouse}.raw", flush=True)
+          PYEOF
+
+      - name: dbt deps
+        run: dbt deps --quiet
+
+      - name: dbt seed — raw schema
+        run: |
+          dbt seed \
+            --profiles-dir .github/profiles \
+            --target prod_seed \
+            --select raw \
+            --full-refresh
+        timeout-minutes: 20
+
+      - name: Report
+        run: echo "Raw seed complete — prod workspace raw tables populated."

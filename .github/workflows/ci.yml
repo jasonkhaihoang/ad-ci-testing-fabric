@@ -315,13 +315,120 @@ jobs:
           )
           EOF
 
+  # ─── DESIGN DRIFT ────────────────────────────────────────────────────────────
+  # Runner-side LLM gate: compares intents/<intent-id>/design.md against state:modified.
+  # Hard DAG gate: provision-workspace needs this job so a drift failure short-circuits
+  # the ephemeral workspace + Spark provision before any compute is spent (AC-8).
+  design-drift:
+    name: "ci/design-drift: design.md vs state:modified"
+    needs: [preflight, fetch-prod-state]
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      statuses: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: pip install pyyaml "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
+
+      - name: Emit ci/design-drift pending
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 - <<'EOF'
+          import os, sys
+          sys.path.insert(0, ".github/scripts")
+          import emit_status
+          emit_status.emit_status(
+              os.environ["GITHUB_REPOSITORY"],
+              os.environ["CI_HEAD_SHA"],
+              "ci/design-drift",
+              "pending",
+              "Gate: design-drift running",
+              "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+          )
+          EOF
+
+      - name: Download deployment manifest
+        uses: actions/download-artifact@v8
+        with:
+          name: deployment-manifest-${{ github.event.pull_request.head.sha }}
+          path: reports/
+
+      - name: Write modified.json from deployment manifest
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 - <<'EOF'
+          import json, os
+          head_sha = os.environ["HEAD_SHA"]
+          with open(f"reports/deployment-manifest-{head_sha}.json") as f:
+              dm = json.load(f)
+          names = [a["name"].split(".")[-1] for a in dm.get("artifacts", [])]
+          with open("reports/modified.json", "w") as f:
+              json.dump(names, f)
+          EOF
+
+      - name: Parse dbt project
+        run: |
+          dbt deps --profiles-dir .github/profiles --target dbt_fabric_compile --quiet
+          dbt parse --profiles-dir .github/profiles --target dbt_fabric_compile --quiet
+
+      - name: Run design-drift gate
+        id: run-gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_API_URL: ${{ vars.LLM_API_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+        run: |
+          python3 ${{ env.SCRIPTS }}/design_drift_runner.py \
+            --pr-number  "${{ github.event.pull_request.number }}" \
+            --head-sha   "${{ github.event.pull_request.head.sha }}" \
+            --intent-id  "${{ needs.preflight.outputs.intent_slug }}" \
+            --manifest   "target/manifest.json" \
+            --modified   "reports/modified.json"
+
+      - name: Emit ci/design-drift final-status failure
+        if: failure() && steps.run-gate.conclusion != 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 - <<'EOF'
+          import os, sys
+          sys.path.insert(0, ".github/scripts")
+          import emit_status
+          emit_status.emit_status(
+              os.environ["GITHUB_REPOSITORY"],
+              os.environ["CI_HEAD_SHA"],
+              "ci/design-drift",
+              "failure",
+              "Gate failed before runner started: see job logs",
+              "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+          )
+          EOF
+
   # ─── PROVISION ────────────────────────────────────────────────────────────
   # 1. KV UAMI: fetch Fabric capacity ID + GitHub App config → GITHUB_ENV
   # 2. Fabric UAMI: find-or-create workspace + lakehouse, inject notebook
   provision-workspace:
     name: "Provision workspace, environment, shortcuts, notebook"
     if: github.event.action != 'closed'
-    needs: [preflight, fetch-prod-state]
+    needs: [preflight, fetch-prod-state, design-drift]
     runs-on: ubuntu-latest
     outputs:
       ephemeral_workspace_id: ${{ steps.provision.outputs.workspace_id }}
@@ -1120,185 +1227,4 @@ jobs:
               result = None
           body = notify_render.render_gate_4_comment(result)
           pr_comment.upsert("<!-- ci-data-tests -->", body, os.environ["PR_NUMBER"], os.environ["GITHUB_REPOSITORY"])
-          EOF
-
-  # ─── GATE 5 — DATA-DIFF ─────────────────────────────────────────────────────
-  # Livy SQL diff from the GHA runner via dbt-fabricspark CLI auth (AC-11).
-  # Label-binding evaluation and final ci/data-diff status remain in the step below.
-  gate-5-data-diff:
-    name: "data-diff job"
-    needs: [preflight, provision-workspace, gate-2-write]
-    if: always() && github.event.action != 'closed'
-    timeout-minutes: 130
-    concurrency:
-      group: pr-${{ github.event.pull_request.number }}-gate-5
-      cancel-in-progress: true
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.head_ref }}
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dbt-fabricspark
-        run: pip install pyyaml "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
-
-      - run: mkdir -p reports
-
-      - name: Login — per-domain SPN
-        uses: azure/login@v3
-        with:
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          allow-no-subscriptions: true
-
-      - name: Download deployment manifest
-        uses: actions/download-artifact@v8
-        with:
-          name: deployment-manifest-${{ github.event.pull_request.head.sha }}
-          path: reports/
-
-      - name: Run Gate 5
-        if: needs.gate-2-write.result == 'success'
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
-          GITHUB_SERVER_URL: ${{ github.server_url }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
-        run: |
-          python3 ${{ env.SCRIPTS }}/gate5_fabric_runner.py run-gate \
-            --workspace-id "${{ needs.provision-workspace.outputs.ephemeral_workspace_id }}" \
-            --workspace-name "${{ needs.preflight.outputs.ephemeral_name }}" \
-            --lakehouse-id "${{ needs.provision-workspace.outputs.ephemeral_lakehouse_id }}" \
-            --lakehouse-name "${{ needs.provision-workspace.outputs.lakehouse_name }}" \
-            --prod-workspace-name "${{ needs.preflight.outputs.prod_workspace_name }}" \
-            --prod-lakehouse-name "${{ needs.preflight.outputs.prod_lakehouse_name }}" \
-            --prod-schema "${{ needs.preflight.outputs.prod_schema }}" \
-            --head-sha "${{ github.event.pull_request.head.sha }}" \
-            --deployment-manifest "reports/deployment-manifest-${{ github.event.pull_request.head.sha }}.json" \
-            --output reports/gate-5.json
-
-      - name: Evaluate diff-acknowledged binding and emit ci/data-diff status
-        if: always() && needs.gate-2-write.result == 'success'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          GITHUB_SERVER_URL: ${{ github.server_url }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
-        run: |
-          python3 - <<'EOF'
-          import json, os, subprocess, sys
-          sys.path.insert(0, ".github/scripts")
-          import pr_comment, label_binding
-          import emit_status
-
-          repo = os.environ["GITHUB_REPOSITORY"]
-          sha = os.environ["CI_HEAD_SHA"]
-          pr_number = os.environ["PR_NUMBER"]
-          run_url = f"{os.environ['GITHUB_SERVER_URL']}/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
-
-          def _emit(state, description):
-              emit_status.emit_status(repo, sha, "ci/data-diff", state, description, run_url)
-
-          try:
-              with open("reports/gate-5.json") as f:
-                  result = json.load(f)
-          except (OSError, json.JSONDecodeError):
-              result = None
-
-          if result is None:
-              _emit("failure", "Gate 5: result not available - notebook may not have completed")
-              sys.exit(0)
-
-          if result.get("overall_status") == "pass":
-              _emit("success", "Gate 5: no diff against prod")
-              sys.exit(0)
-
-          if result.get("overall_status") == "error":
-              _emit("failure", "Gate 5: session error — re-run to retry")
-              sys.exit(0)
-
-          latest_hash = result.get("latest_hash")
-          if not latest_hash:
-              _emit("failure", "Gate 5: non-empty diff detected")
-              sys.exit(0)
-
-          marker_comment_id = pr_comment.find_by_marker(label_binding.MARKER, pr_number, repo)
-          existing_body = None
-          if marker_comment_id:
-              res = subprocess.run(
-                  ["gh", "api", f"repos/{repo}/issues/comments/{marker_comment_id}", "--jq", ".body"],
-                  capture_output=True, text=True,
-              )
-              existing_body = res.stdout.strip()
-          existing_marker = label_binding.read_marker(existing_body)
-
-          decision = label_binding.decide_gate5_outcome(latest_hash, existing_marker)
-
-          bound_hash = None if decision["strip_bound"] else existing_marker.get("bound_hash")
-          new_marker_body = label_binding.write_marker(latest_hash, bound_hash)
-          pr_comment.upsert(label_binding.MARKER, new_marker_body, pr_number, repo)
-
-          if decision["strip_bound"]:
-              subprocess.run(
-                  ["gh", "api", "--method", "DELETE",
-                   f"repos/{repo}/issues/{pr_number}/labels/{label_binding.LABEL_NAME}"],
-                  capture_output=True,
-              )
-
-          if decision["action"] == "auto_pass":
-              subprocess.run(
-                  ["gh", "api", "--method", "POST",
-                   f"repos/{repo}/issues/{pr_number}/labels",
-                   "--field", f"labels[]={label_binding.LABEL_NAME}"],
-                  capture_output=True,
-              )
-              # Mark gate-5.json so the Post comment step renders the ack banner
-              try:
-                  with open("reports/gate-5.json") as f:
-                      g5 = json.load(f)
-                  g5["ack_active"] = True
-                  with open("reports/gate-5.json", "w") as f:
-                      json.dump(g5, f)
-              except (OSError, KeyError) as e:
-                  print(f"warning: ack-flag write failed — {e}", file=sys.stderr, flush=True)
-              _emit("success", "Gate 5: diff acknowledged (hash match)")
-              sys.exit(0)
-          else:
-              _emit("failure", "Gate 5: non-empty diff - apply diff-acknowledged label to acknowledge")
-              sys.exit(0)
-          EOF
-
-      - name: Post gate-5 comment
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GATE_2_RESULT: ${{ needs.gate-2-write.result }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          python3 - <<'EOF'
-          import json, os, sys
-          sys.path.insert(0, ".github/scripts")
-          import notify_render, pr_comment
-          try:
-              with open("reports/gate-5.json") as f:
-                  result = json.load(f)
-          except (OSError, json.JSONDecodeError):
-              result = None
-          gate_2_result = os.environ.get("GATE_2_RESULT", "")
-          run_url = os.environ.get("RUN_URL", "")
-          if result is None and gate_2_result == "success":
-              body = notify_render.render_gate_5_failed(run_url=run_url)
-          else:
-              body = notify_render.render_gate_5_comment(result)
-          pr_comment.upsert("<!-- ci-data-diff -->", body, os.environ["PR_NUMBER"], os.environ["GITHUB_REPOSITORY"])
           EOF
