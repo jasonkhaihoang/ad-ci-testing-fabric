@@ -282,7 +282,7 @@ jobs:
 
       - name: Upload deployment manifest GHA artifact
         if: steps.fetch.outcome == 'success'
-        uses: actions/upload-artifact@v8
+        uses: actions/upload-artifact@v7
         with:
           name: deployment-manifest-${{ github.event.pull_request.head.sha }}
           path: reports/deployment-manifest-${{ github.event.pull_request.head.sha }}.json
