@@ -24,3 +24,9 @@ Fact model for monthly pipeline aggregated by product.
 - Materialization: table
 - Unique key: `close_month`, `product_id`
 - Downstream of: `fct_pipeline`
+
+### fct_sales_pipeline_by_stage
+Fact model for pipeline aggregated by sales stage.
+- Grain: one row per opportunity and stage
+- Materialization: table
+- Downstream of: `stg_salescloud__opportunity`
