@@ -88,7 +88,10 @@ def _design_md_path(intent_id: str) -> str:
 
 
 def call_llm(api_key: str, prompt: str, api_url: str, model: str) -> dict:
-    url = f"{api_url.rstrip('/')}/v1/chat/completions"
+    # Support both a base URL (https://api.openai.com) and a full endpoint URL
+    # (https://api.openai.com/v1/chat/completions) — append only when needed.
+    base = api_url.rstrip("/")
+    url = base if base.endswith("/v1/chat/completions") else f"{base}/v1/chat/completions"
     body = json.dumps({
         "model": model,
         "max_tokens": MAX_OUTPUT_TOKENS,
