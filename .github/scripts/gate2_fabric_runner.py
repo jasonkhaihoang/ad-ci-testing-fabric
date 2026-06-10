@@ -93,6 +93,15 @@ def cmd_run_gate(args) -> int:
     head_sha = args.head_sha
     _post(head_sha, "pending", "Gate 2: cloning and running dbt on Fabric runner")
 
+    # AC-24.3: A missing manifest means the download step failed — fail loudly, never a silent 0-models pass.
+    if not os.path.isfile(args.deployment_manifest):
+        print(
+            f"ERROR: deployment manifest not found: {args.deployment_manifest}",
+            flush=True, file=sys.stderr,
+        )
+        _post(head_sha, "failure", "Gate 2: deployment manifest download failed")
+        return 1
+
     env = {
         **os.environ,
         "WORKSPACE_ID": args.workspace_id,

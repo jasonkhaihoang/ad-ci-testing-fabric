@@ -103,15 +103,13 @@ def cmd_run_gate(args) -> int:
                 diff_artifacts.append(compute_artifact_diff(artifact, [], [], 0, 0, None))
                 continue
 
-            model_full = artifact.get("name", "")
-            parts = model_full.rsplit(".", 1)
-            model_name = parts[-1]
-            artifact_schema = parts[0] if len(parts) > 1 else args.schema
+            model_name = artifact.get("name", "")
+            model_schema = artifact.get("schema") or args.schema
 
             ci_ref = _ci_table_ref(args.workspace_name, args.lakehouse_name,
-                                   artifact_schema, model_name)
+                                   model_schema, model_name)
             prod_ref = _prod_table_ref(args.prod_workspace_name, args.prod_lakehouse_name,
-                                       args.prod_schema, model_name)
+                                       model_schema, model_name)
 
             ci_cols = execute_spark_schema(session_url, ci_ref, token_fn)
             prod_cols = execute_spark_schema(session_url, prod_ref, token_fn)
@@ -152,7 +150,7 @@ def cmd_run_gate(args) -> int:
     print(f"Gate 5 result: {overall}", flush=True)
     # Final ci/data-diff status (success/failure) is posted by the label-binding
     # step in ci.yml. We only post pending above.
-    return 0 if overall != "error" else 1
+    return 0 if overall == "pass" else 1
 
 
 def main(argv: list[str] | None = None) -> int:
