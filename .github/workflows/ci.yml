@@ -269,6 +269,26 @@ jobs:
           path: prod-state/
           retention-days: 7
 
+      - name: Emit deployment manifest
+        # Emit per-head-SHA deployment manifest here (in fetch-prod-state) so the
+        # design-drift job can download it before provision-workspace runs.
+        if: steps.fetch.outcome == 'success'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          dbt deps --profiles-dir .github/profiles --target dbt_fabric_compile --quiet
+          mkdir -p reports
+          python3 ${{ env.SCRIPTS }}/emit_deployment_manifest.py
+
+      - name: Upload deployment manifest GHA artifact
+        if: steps.fetch.outcome == 'success'
+        uses: actions/upload-artifact@v8
+        with:
+          name: deployment-manifest-${{ github.event.pull_request.head.sha }}
+          path: reports/deployment-manifest-${{ github.event.pull_request.head.sha }}.json
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Show modified set
         # VD-2175: surface the `state:modified+` closure inline in Gate 1 logs so
         # developers don't need to dig into the deployment manifest to see what changed.
