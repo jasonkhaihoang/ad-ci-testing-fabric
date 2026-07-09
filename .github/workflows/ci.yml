@@ -389,6 +389,87 @@ jobs:
           )
           EOF
 
+  # ─── GATE 1 COMMENT ──────────────────────────────────────────────────────────
+  # Posts the ci/state-modified+ PR comment (closure table, or Mode/Category/
+  # Reason on platform error). Decoupled from provision-workspace, which
+  # `needs: fetch-prod-state` and is entirely skipped on a Gate 1 failure — a
+  # step-level `if: always()` inside a skipped job never runs. This job needs
+  # only `fetch-prod-state` and carries its own `if: always()`, so the
+  # structured comment posts on every outcome, including a platform error.
+  # (VD-3225: found live — AC-14's comment never posted on any Gate 1 failure
+  # before this fix, artifact mode included.)
+  gate-1-comment:
+    name: "ci/state-modified+: post comment"
+    if: always() && github.event.action != 'closed'
+    needs: [preflight, fetch-prod-state]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: pip install pyyaml --quiet
+
+      - name: Download deployment manifest artifact
+        if: needs.fetch-prod-state.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: deployment-manifest-${{ github.event.pull_request.head.sha }}
+          path: reports/
+        continue-on-error: true
+
+      - name: Post gate-1 comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GREENFIELD_FALLBACK: ${{ needs.fetch-prod-state.outputs.greenfield_fallback }}
+          PLATFORM_ERROR_MODE: ${{ needs.fetch-prod-state.outputs.platform_error_mode }}
+          PLATFORM_ERROR_CATEGORY: ${{ needs.fetch-prod-state.outputs.platform_error_category }}
+          PLATFORM_ERROR_REASON: ${{ needs.fetch-prod-state.outputs.platform_error_reason }}
+          GATE1_JOB_STATUS: ${{ needs.fetch-prod-state.result }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          SCRIPTS_DIR: ${{ env.SCRIPTS }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys
+          sys.path.insert(0, os.environ["GITHUB_WORKSPACE"] + "/" + os.environ["SCRIPTS_DIR"])
+          import notify_render, pr_comment
+          greenfield = os.environ.get("GREENFIELD_FALLBACK", "false").lower() == "true"
+          passed = os.environ.get("GATE1_JOB_STATUS", "failure").lower() == "success"
+          category = os.environ.get("PLATFORM_ERROR_CATEGORY", "")
+          platform_error = None
+          if category:
+              platform_error = {
+                  "mode": os.environ.get("PLATFORM_ERROR_MODE", "artifact"),
+                  "category": category,
+                  "reason": os.environ.get("PLATFORM_ERROR_REASON", ""),
+              }
+          head_sha = os.environ.get("HEAD_SHA", "")
+          closure = []
+          try:
+              manifest_path = f"reports/deployment-manifest-{head_sha}.json"
+              with open(manifest_path) as f:
+                  dm = json.load(f)
+              for a in dm.get("artifacts", []):
+                  closure.append({
+                      "name": a.get("name", "").split(".")[-1],
+                      "materialization": a.get("materialized", "unknown"),
+                      "closure_source": a.get("closure_source", "descendant"),
+                  })
+          except (FileNotFoundError, json.JSONDecodeError):
+              closure = []
+          body = notify_render.render_gate_1_comment(
+              closure,
+              greenfield=greenfield,
+              passed=passed,
+              platform_error=platform_error,
+          )
+          pr_comment.upsert(notify_render.GATE_1_MARKER, body, os.environ["PR_NUMBER"], os.environ["REPO"])
+          EOF
+
   # ─── DESIGN DRIFT ────────────────────────────────────────────────────────────
   # Runner-side LLM gate: compares intents/<intent-id>/design.md against state:modified.
   # Hard DAG gate: provision-workspace needs this job so a drift failure short-circuits
@@ -849,58 +930,6 @@ jobs:
           path: reports/deployment-manifest-${{ github.event.pull_request.head.sha }}.json
           if-no-files-found: error
           retention-days: 30
-
-      - name: Post gate-1 comment
-        if: always()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GREENFIELD_FALLBACK: ${{ needs.fetch-prod-state.outputs.greenfield_fallback }}
-          PLATFORM_ERROR_MODE: ${{ needs.fetch-prod-state.outputs.platform_error_mode }}
-          PLATFORM_ERROR_CATEGORY: ${{ needs.fetch-prod-state.outputs.platform_error_category }}
-          PLATFORM_ERROR_REASON: ${{ needs.fetch-prod-state.outputs.platform_error_reason }}
-          GATE1_JOB_STATUS: ${{ needs.fetch-prod-state.result }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-          SCRIPTS_DIR: ${{ env.SCRIPTS }}
-        run: |
-          python3 - <<'EOF'
-          import json, os, sys
-          sys.path.insert(0, os.environ["GITHUB_WORKSPACE"] + "/" + os.environ["SCRIPTS_DIR"])
-          import notify_render, pr_comment
-          greenfield = os.environ.get("GREENFIELD_FALLBACK", "false").lower() == "true"
-          passed = os.environ.get("GATE1_JOB_STATUS", "failure").lower() == "success"
-          category = os.environ.get("PLATFORM_ERROR_CATEGORY", "")
-          platform_error = None
-          if category:
-              platform_error = {
-                  "mode": os.environ.get("PLATFORM_ERROR_MODE", "artifact"),
-                  "category": category,
-                  "reason": os.environ.get("PLATFORM_ERROR_REASON", ""),
-              }
-          head_sha = os.environ.get("HEAD_SHA", "")
-          closure = []
-          try:
-              manifest_path = f"reports/deployment-manifest-{head_sha}.json"
-              with open(manifest_path) as f:
-                  dm = json.load(f)
-              for a in dm.get("artifacts", []):
-                  closure.append({
-                      "name": a.get("name", "").split(".")[-1],
-                      "materialization": a.get("materialized", "unknown"),
-                      "closure_source": a.get("closure_source", "descendant"),
-                  })
-          except (FileNotFoundError, json.JSONDecodeError):
-              closure = []
-          body = notify_render.render_gate_1_comment(
-              closure,
-              greenfield=greenfield,
-              passed=passed,
-              platform_error=platform_error,
-          )
-          pr_comment.upsert(notify_render.GATE_1_MARKER, body, os.environ["PR_NUMBER"], os.environ["REPO"])
-          EOF
 
       - name: Upload shortcut seeding report
         uses: actions/upload-artifact@v7
