@@ -47,10 +47,30 @@ ONELAKE_DFS = "https://onelake.dfs.fabric.microsoft.com"
 #   transient — gh CLI non-zero, retryable stderr, network/timeout
 #   config    — missing required key in ci-config.yml
 #   parse     — manifest absent from artifact, or invalid JSON inside it
-# (`auth` is reserved for onelake-mode UAMI failures — see §4.2 of the
-# design doc. Onelake classification is deferred; see fetch_onelake_mode.)
+# (`auth` is onelake-mode-only, not reachable in artifact mode which uses the
+# repo `GITHUB_TOKEN` — see §4.2 of the design doc and OnelakeResult below.)
 
 class ArtifactResult(NamedTuple):
+    status: str  # "success" | "greenfield" | "error"
+    category: str | None = None
+    reason: str | None = None
+
+
+# ─── Onelake-mode result type (VD-3216) ───────────────────────────────────────
+#
+# Mirrors ArtifactResult. A 404 on the fixed canonical OneLake manifest path is
+# the confirmed-greenfield signal: domain-deploy always publishes to this same
+# path with no retention/rotation window, so 404 there is structurally
+# equivalent to artifact mode's "zero successful CD runs ever". Any other
+# failure is a platform error — never collapsed to greenfield.
+#
+# Categories (onelake mode):
+#   config    — missing workspace_id/lakehouse_id/file_path in ci-config.yml
+#   auth      — Fabric UAMI token acquisition failure, or 401/403 on the fetch
+#   transient — 5xx, network error, or timeout
+#   parse     — response body is not valid JSON
+
+class OnelakeResult(NamedTuple):
     status: str  # "success" | "greenfield" | "error"
     category: str | None = None
     reason: str | None = None
@@ -177,13 +197,11 @@ def fetch_artifact_mode(cfg: dict) -> ArtifactResult:
     return ArtifactResult("success")
 
 
-def fetch_onelake_mode(cfg: dict) -> bool:
-    """Download manifest from OneLake Files path via Fabric UAMI. Returns True on success.
+def fetch_onelake_mode(cfg: dict) -> OnelakeResult:
+    """Download manifest from OneLake Files path via Fabric UAMI.
 
-    # TODO(VD-1596 onelake): onelake-mode platform-error classification is
-    # deferred until onelake mode is activated. Until then, any failure here
-    # is treated as a fallback-to-greenfield signal by main() — there is no
-    # `auth | transient | parse` category breakdown for onelake yet.
+    Returns an OnelakeResult — see OnelakeResult docstring for the three
+    possible statuses and category mapping (VD-3216).
     """
     workspace_id = cfg.get("workspace_id", "")
     lakehouse_id = cfg.get("lakehouse_id", "")
@@ -191,14 +209,23 @@ def fetch_onelake_mode(cfg: dict) -> bool:
     head_sha = os.environ.get("HEAD_SHA", "")
 
     if not all([workspace_id, lakehouse_id, file_path]):
-        runner_io.error(
+        reason = (
             "prod_manifest_source.workspace_id, lakehouse_id, and file_path "
             "are all required for onelake mode."
         )
-        return False
+        runner_io.error(reason)
+        return OnelakeResult("error", "config", reason)
 
-    token = fabric_transport.get_token("storage")
-    url = f"{ONELAKE_DFS}/{workspace_id}/{lakehouse_id}/{file_path}"
+    base_url = os.environ.get("ONELAKE_DFS_BASE_URL", ONELAKE_DFS)
+    url = f"{base_url}/{workspace_id}/{lakehouse_id}/{file_path}"
+
+    try:
+        token = fabric_transport.get_token("storage")
+    except (subprocess.CalledProcessError, ValueError, KeyError) as e:
+        reason = f"Fabric UAMI token acquisition failed: {e}"
+        runner_io.warning(reason)
+        return OnelakeResult("error", "auth", reason)
+
     req = urllib.request.Request(url, method="GET")
     req.add_header("Authorization", f"Bearer {token}")
 
@@ -206,9 +233,32 @@ def fetch_onelake_mode(cfg: dict) -> bool:
         with urllib.request.urlopen(req) as resp:
             content = resp.read()
     except urllib.error.HTTPError as e:
-        level = "404" if e.code == 404 else f"HTTP {e.code}"
-        runner_io.warning(f"OneLake manifest fetch failed ({level}) — falling back to greenfield.")
-        return False
+        if e.code == 404:
+            # The single legitimate greenfield signal: domain-deploy always
+            # publishes to this same fixed path with no retention window, so
+            # a 404 there is the onelake equivalent of "zero prior publishes".
+            runner_io.notice(
+                "No manifest found at the OneLake prod-state path — true "
+                "greenfield (full build)."
+            )
+            return OnelakeResult("greenfield")
+        category = "auth" if e.code in (401, 403) else "transient"
+        reason = f"OneLake manifest fetch failed (HTTP {e.code})."
+        runner_io.warning(reason)
+        return OnelakeResult("error", category, reason)
+    except urllib.error.URLError as e:
+        reason = f"OneLake manifest fetch failed (network error): {e.reason}"
+        runner_io.warning(reason)
+        return OnelakeResult("error", "transient", reason)
+
+    # Validate the manifest is parseable JSON before declaring success —
+    # mirrors artifact mode's parse validation.
+    try:
+        json.loads(content)
+    except ValueError as e:
+        reason = f"OneLake manifest at {file_path} is not valid JSON: {e}"
+        runner_io.warning(reason)
+        return OnelakeResult("error", "parse", reason)
 
     os.makedirs("prod-state", exist_ok=True)
     with open("prod-state/manifest.json", "wb") as f:
@@ -220,7 +270,7 @@ def fetch_onelake_mode(cfg: dict) -> bool:
         head_sha=head_sha,
     )
     print(f"OneLake manifest fetched from {url}.", flush=True)
-    return True
+    return OnelakeResult("success")
 
 
 def fetch_greenfield() -> None:
@@ -338,6 +388,23 @@ def _emit_platform_error(mode: str, category: str, reason: str) -> None:
     runner_io.error(f"Platform error ({mode}/{category}): {reason}")
 
 
+def _apply_fetch_result(mode: str, result: ArtifactResult | OnelakeResult) -> None:
+    """Dispatch on a fetch result's status — shared by artifact and onelake mode.
+
+    Both ArtifactResult and OnelakeResult carry the same (status, category,
+    reason) shape, so the success/greenfield/error branching is identical;
+    only the mode name threaded into the platform-error output differs.
+    """
+    if result.status == "success":
+        runner_io.set_output("greenfield_fallback", "false")
+    elif result.status == "greenfield":
+        fetch_greenfield()
+        runner_io.set_output("greenfield_fallback", "true")
+    else:  # error — distinguish from greenfield, exit non-zero
+        _emit_platform_error(mode, result.category or "transient", result.reason or "")
+        sys.exit(1)
+
+
 def main() -> None:
     config = load_config()
     if config is None:
@@ -352,25 +419,9 @@ def main() -> None:
     mode = manifest_cfg.get("mode", "artifact")
 
     if mode == "artifact":
-        result = fetch_artifact_mode(manifest_cfg)
-        if result.status == "success":
-            runner_io.set_output("greenfield_fallback", "false")
-        elif result.status == "greenfield":
-            fetch_greenfield()
-            runner_io.set_output("greenfield_fallback", "true")
-        else:  # error — VD-1596 Phase 2: distinguish from greenfield, exit non-zero
-            _emit_platform_error("artifact", result.category or "transient", result.reason or "")
-            sys.exit(1)
+        _apply_fetch_result("artifact", fetch_artifact_mode(manifest_cfg))
     elif mode == "onelake":
-        # TODO(VD-1596 onelake): no platform-error classification yet — any
-        # failure collapses to greenfield, mirroring the demo behaviour. Lift
-        # this once onelake mode is activated.
-        success = fetch_onelake_mode(manifest_cfg)
-        if not success:
-            fetch_greenfield()
-            runner_io.set_output("greenfield_fallback", "true")
-        else:
-            runner_io.set_output("greenfield_fallback", "false")
+        _apply_fetch_result("onelake", fetch_onelake_mode(manifest_cfg))
     else:
         runner_io.warning(f"Unknown prod_manifest_source.mode '{mode}' — using greenfield fallback.")
         fetch_greenfield()
