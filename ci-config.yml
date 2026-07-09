@@ -6,6 +6,7 @@
 # VD Studio populates this file automatically at domain setup time.
 
 domain: sales-pipeline
+platform: fabric
 
 prod_workspace_id: 7aeb9e12-8ad0-421d-82ad-262512491e16
 prod_workspace_name: vibedata_prd_sales_pipeline
@@ -24,12 +25,16 @@ notebook_glob: "intents/**/*.ipynb"         # Glob pattern to find the dbt noteb
 # for Slim CI (dbt build --defer --state). If omitted, greenfield fallback is used.
 
 prod_manifest_source:
-  mode: artifact
-  workflow: publish-prod-manifest.yml
-  artifact_name: prod-manifest
-  main_branch: main
+  # VD-3216 E2E test (temporary, this branch only): onelake mode pointed at a
+  # real-but-nonexistent path in the real prod lakehouse, to exercise the
+  # confirmed-greenfield (404) path live. Revert to artifact mode before merge.
+  mode: onelake
+  workspace_id: 7aeb9e12-8ad0-421d-82ad-262512491e16
+  lakehouse_id: fe90ede0-e379-446e-9e69-1b487dc71946
+  file_path: Files/ci-artifacts/prod-state/manifest-vd3216-e2e-greenfield-test.json
 
-#   # onelake mode (future — post-CD, see design doc §4.5 ADR):
-#   # workspace_id: <prod-ws-guid>    # production Fabric workspace ID
-#   # lakehouse_id: <prod-lh-guid>    # production Fabric lakehouse ID
-#   # file_path: Files/ci-artifacts/prod-state/manifest.json
+#   # artifact mode (default — restore this after the VD-3216 E2E test):
+#   # mode: artifact
+#   # workflow: publish-prod-manifest.yml
+#   # artifact_name: prod-manifest
+#   # main_branch: main
