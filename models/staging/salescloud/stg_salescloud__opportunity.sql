@@ -56,3 +56,4 @@ renamed as (
 select * from renamed
 
 -- VD-2229 validation bump
+-- VD-3229 validation bump v3 (holding open for live Fabric inspection)
