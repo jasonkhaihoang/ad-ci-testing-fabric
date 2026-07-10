@@ -18,6 +18,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Resolve layout
+        run: |
+          echo "PROJ=$([ -f transformation/dbt_project.yml ] && echo transformation || echo .)" >> "$GITHUB_ENV"
+          echo "CICFG=$([ -f .github/ci-config.yml ] && echo .github/ci-config.yml || echo ci-config.yml)" >> "$GITHUB_ENV"
+
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
@@ -30,7 +35,7 @@ jobs:
           python3 - <<'PYEOF'
           import yaml, os, sys
 
-          with open("ci-config.yml") as f:
+          with open(os.environ.get("CICFG", "ci-config.yml")) as f:
               config = yaml.safe_load(f) or {}
 
           workspace_id   = config.get("prod_workspace_id", "")
@@ -74,17 +79,17 @@ jobs:
 
       - name: Parse dbt project — compile target
         run: |
-          dbt deps --quiet
-          dbt parse --profiles-dir .github/profiles --target dbt_fabric_compile --quiet
+          dbt deps --project-dir "$PROJ" --quiet
+          dbt parse --project-dir "$PROJ" --profiles-dir .github/profiles --target dbt_fabric_compile --quiet
           mkdir -p /tmp/prod-manifests
-          cp target/manifest.json /tmp/prod-manifests/manifest.json
+          cp "$PROJ/target/manifest.json" /tmp/prod-manifests/manifest.json
 
       - name: Parse dbt project — prod target
         env:
           PROD_WORKSPACE_NAME: ${{ env.PROD_WORKSPACE_NAME }}
         run: |
-          dbt parse --profiles-dir /tmp/prod-profiles --target prod_manifest --quiet
-          cp target/manifest.json /tmp/prod-manifests/manifest_prod.json
+          dbt parse --project-dir "$PROJ" --profiles-dir /tmp/prod-profiles --target prod_manifest --quiet
+          cp "$PROJ/target/manifest.json" /tmp/prod-manifests/manifest_prod.json
 
       - name: Upload prod-manifest artifact
         uses: actions/upload-artifact@v7

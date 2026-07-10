@@ -461,11 +461,59 @@ def _find_existing_environment(workspace_id: str, env_name: str) -> str | None:
     return None
 
 
-def create_environment(workspace_id: str, config_path: str) -> str:
+def _translate_keys(source: dict, key_map: dict) -> dict:
+    """Rename keys present in `source` per `key_map` (snake_case -> camelCase); others dropped."""
+    return {camel: source[snake] for snake, camel in key_map.items() if snake in source}
+
+
+def _load_spark_compute_overrides(ci_config_path: str) -> dict:
+    """Read the optional `spark_compute` stanza from a domain's ci-config.yml (AC-50).
+
+    Translates its snake_case keys to the camelCase fields the Fabric
+    `staging/sparkcompute` endpoint expects. Only keys actually present in
+    `spark_compute` are included — no defaults are injected here.
+    """
+    with open(ci_config_path) as f:
+        ci_config = yaml.safe_load(f) or {}
+
+    spark_compute = ci_config.get("spark_compute") or {}
+    if not isinstance(spark_compute, dict):
+        raise ValueError(
+            f"ci-config.yml 'spark_compute' must be a mapping, got {type(spark_compute).__name__}"
+        )
+
+    overrides = _translate_keys(spark_compute, {
+        "driver_cores": "driverCores",
+        "driver_memory": "driverMemory",
+        "executor_cores": "executorCores",
+        "executor_memory": "executorMemory",
+    })
+
+    if "dynamic_executor_allocation" in spark_compute:
+        dea = spark_compute["dynamic_executor_allocation"]
+        if not isinstance(dea, dict):
+            raise ValueError(
+                f"ci-config.yml 'spark_compute.dynamic_executor_allocation' must be a mapping, "
+                f"got {type(dea).__name__}"
+            )
+        overrides["dynamicExecutorAllocation"] = _translate_keys(dea, {
+            "enabled": "enabled",
+            "min_executors": "minExecutors",
+            "max_executors": "maxExecutors",
+        })
+
+    return overrides
+
+
+def create_environment(workspace_id: str, config_path: str, ci_config_path: str | None = None) -> str:
     """Create or reuse a Fabric Environment from a YAML definition and upload pip packages.
 
     Returns the environment ID. Emits environment_id and environment_name to GITHUB_OUTPUT.
     Idempotent: if an environment with the same name already exists, reuses it.
+
+    Spark compute (AC-50) is domain-controlled: the instance pool is always Fabric's
+    built-in Starter Pool (not configurable), and driver/executor sizing is optionally
+    overridden from `ci_config_path`'s `spark_compute` stanza.
     """
     with open(config_path) as f:
         config = yaml.safe_load(f)
@@ -486,38 +534,39 @@ def create_environment(workspace_id: str, config_path: str) -> str:
         env_id = resp["id"]
         print(f"Created environment '{env_name}' ({env_id})", flush=True)
 
-    # Configure spark compute if specified.
+    # Always configure spark compute against the fixed Starter Pool, merging in
+    # any domain-supplied driver/executor overrides (AC-50).
     # Skip when already published — re-PATCHing staging on a published environment
-    # triggers full pool-size validation and fails on constrained capacities (e.g. F2).
-    # Settings are stable once published; they only change on a bundle upgrade,
-    # which always arrives on a fresh workspace (supersession or new PR).
-    spark_pool = config.get("spark_pool", {})
-    if spark_pool:
-        env_detail = fabric_transport.request(
-            "GET", f"/workspaces/{workspace_id}/environments/{env_id}"
+    # triggers full pool-size validation and fails on constrained capacities (e.g. F4's
+    # Starter Pool cap). Settings are stable once published; they only change on a bundle
+    # or ci-config.yml upgrade, which always arrives on a fresh workspace (supersession or new PR).
+    env_detail = fabric_transport.request(
+        "GET", f"/workspaces/{workspace_id}/environments/{env_id}"
+    )
+    publish_state = (
+        env_detail.get("properties", {})
+        .get("publishDetails", {})
+        .get("state", "")
+    )
+    if publish_state == "Success":
+        print(
+            f"Environment already published (state: {publish_state}) — "
+            "skipping sparkcompute reconfigure.",
+            flush=True,
         )
-        publish_state = (
-            env_detail.get("properties", {})
-            .get("publishDetails", {})
-            .get("state", "")
+    else:
+        sparkcompute_body = {
+            "instancePool": {"name": "Starter Pool", "type": "Workspace"},
+            "runtimeVersion": runtime_version,
+        }
+        if ci_config_path:
+            sparkcompute_body.update(_load_spark_compute_overrides(ci_config_path))
+        fabric_transport.request(
+            "PATCH",
+            f"/workspaces/{workspace_id}/environments/{env_id}/staging/sparkcompute",
+            sparkcompute_body,
         )
-        if publish_state == "Success":
-            print(
-                f"Environment already published (state: {publish_state}) — "
-                "skipping sparkcompute reconfigure.",
-                flush=True,
-            )
-        else:
-            sparkcompute_body = {
-                "nodeSize": spark_pool.get("node_size", "Small"),
-                "autoscale": spark_pool.get("auto_scale", {}),
-            }
-            fabric_transport.request(
-                "PATCH",
-                f"/workspaces/{workspace_id}/environments/{env_id}/staging/sparkcompute",
-                {**sparkcompute_body, "runtimeVersion": runtime_version},
-            )
-            print(f"Configured spark compute: {sparkcompute_body}", flush=True)
+        print(f"Configured spark compute: {sparkcompute_body}", flush=True)
 
     # Upload pip packages to staging/libraries — API requires multipart/form-data environment.yml
     pip_packages = config.get("pip_packages", [])
@@ -539,7 +588,7 @@ def create_environment(workspace_id: str, config_path: str) -> str:
 
 
 def cmd_create_environment(args):
-    create_environment(args.workspace_id, args.config)
+    create_environment(args.workspace_id, args.config, ci_config_path=args.ci_config)
 
 
 def publish_environment(workspace_id: str, environment_id: str, poll_interval: int = 30) -> None:
@@ -628,6 +677,11 @@ def main():
     p4 = sub.add_parser("create-environment")
     p4.add_argument("--workspace-id", required=True)
     p4.add_argument("--config", required=True, help="Path to ephemeral-ci-environment.yaml")
+    p4.add_argument(
+        "--ci-config",
+        default=None,
+        help="Path to the domain's ci-config.yml; reads its optional spark_compute overrides (AC-50)",
+    )
     p5 = sub.add_parser("publish-environment")
     p5.add_argument("--workspace-id", required=True)
     p5.add_argument("--environment-id", required=True)

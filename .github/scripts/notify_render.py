@@ -1071,6 +1071,8 @@ GATE_3_MARKER = "<!-- ci-unit-tests -->"
 GATE_4_MARKER = "<!-- ci-data-tests -->"
 GATE_5_MARKER = "<!-- ci-data-diff -->"
 PREFLIGHT_MARKER = "<!-- ci-preflight -->"
+ORCHESTRATION_MARKER = "<!-- ci-orchestration -->"
+SEMANTIC_MODEL_MARKER = "<!-- ci-semantic-model -->"
 
 
 def render_gate_0_comment(
@@ -1276,6 +1278,42 @@ def render_design_drift_comment(result: dict | None, modified_names: list[str] |
         )
 
     return f"{DESIGN_DRIFT_MARKER}\n{section}"
+
+
+def render_contract_gate_comment(marker: str, title: str, context: str, result: dict | None) -> str:
+    """Render a C5 design-contract gate result ({skipped, findings:[{rule,severity,message}]}).
+
+    Reused by ci/orchestration and ci/semantic-model — the two design-contract gates
+    share the C5 protocol, so they share one renderer.
+    """
+    if result is None:
+        return f"{marker}\n## {title} ({context}) ⚠️\n\n_No data available._\n"
+
+    if result.get("skipped"):
+        return (
+            f"{marker}\n## {title} ({context}) ⏭️ Skipped\n\n"
+            f"No design-contract section declared in design.md — nothing to validate.\n"
+        )
+
+    findings = result.get("findings") or []
+    critical = [f for f in findings if f.get("severity") == "critical"]
+
+    if not critical:
+        body = f"{marker}\n## {title} ({context}) ✅\n\nDesign contract satisfied.\n"
+        advisory = [f for f in findings if f.get("severity") != "critical"]
+        if advisory:
+            lines = "\n".join(f"- `{f.get('rule', '')}` — {f.get('message', '')}" for f in advisory)
+            body += f"\n_Advisory:_\n{lines}\n"
+        return body
+
+    rows = "\n".join(
+        f"| {f.get('severity', '')} | {f.get('rule', '')} | {f.get('message', '')} |"
+        for f in findings
+    )
+    return (
+        f"{marker}\n## {title} ({context}) ❌\n\n"
+        f"| Severity | Rule | Detail |\n| --- | --- | --- |\n{rows}\n"
+    )
 
 
 def render_gate_4_comment(result) -> str:

@@ -29,6 +29,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Resolve layout
+        run: |
+          echo "PROJ=$([ -f transformation/dbt_project.yml ] && echo transformation || echo .)" >> "$GITHUB_ENV"
+          echo "CICFG=$([ -f .github/ci-config.yml ] && echo .github/ci-config.yml || echo ci-config.yml)" >> "$GITHUB_ENV"
+
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -49,7 +54,7 @@ jobs:
         run: pip install dbt-duckdb dbt-core pyyaml --quiet
 
       - name: dbt deps
-        run: dbt deps --quiet
+        run: dbt deps --project-dir "$PROJ" --quiet
 
       - name: dbt compile (offline)
         env:
@@ -63,6 +68,7 @@ jobs:
           DBT_JOB_NAME: dbt-quality
         run: |
           dbt compile \
+            --project-dir "$PROJ" \
             --profiles-dir .github/profiles/dbt-quality \
             --profile dbt_project_quality_profile \
             --target dbt_quality \
@@ -71,6 +77,7 @@ jobs:
       - name: Run dbt-project-evaluator
         run: |
           dbt build \
+            --project-dir "$PROJ" \
             --select dbt_project_evaluator \
             --profiles-dir .github/profiles/dbt-quality \
             --profile dbt_project_quality_profile \

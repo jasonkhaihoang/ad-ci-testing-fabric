@@ -12,7 +12,7 @@ import os
 import subprocess
 import sys
 
-from ci_config import validate_intent_slug, parse_ci_config
+from ci_config import validate_intent_slug, parse_ci_config, locate_ci_config
 
 
 _AUTO_MERGE_VIOLATION_MESSAGE = (
@@ -132,9 +132,13 @@ def main() -> None:
     parser.add_argument("--github-output", default="")
     args = parser.parse_args()
 
+    config_path = args.ci_config_path
+    if not os.path.isfile(config_path):
+        config_path = locate_ci_config()
+
     yaml_str = ""
     try:
-        with open(args.ci_config_path) as f:
+        with open(config_path) as f:
             yaml_str = f.read()
     except FileNotFoundError:
         pass
