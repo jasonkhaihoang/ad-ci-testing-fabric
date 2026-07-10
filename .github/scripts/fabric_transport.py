@@ -43,8 +43,17 @@ def get_token(audience: str) -> str:
     return json.loads(result.stdout)["accessToken"]
 
 
+def _retry_delay(code: int, attempt: int, headers) -> int:
+    """Return seconds to wait before retry attempt. 430 uses exponential backoff; others honor Retry-After."""
+    if code == 430:
+        return 30 * (2 ** attempt)
+    if code == 500:
+        return 1
+    return int(headers.get("Retry-After", 5))
+
+
 def request(method: str, path: str, body: dict = None, audience: str = "fabric", retries: int = 3) -> dict:
-    """Fabric REST API call with retry on 429/500/503 honoring Retry-After."""
+    """Fabric REST API call with retry on 429/430/500/503 honoring Retry-After."""
     base = _AUDIENCE_BASE_URL[audience]
     url = f"{base}{path}"
     data = json.dumps(body).encode() if body else None
@@ -59,10 +68,10 @@ def request(method: str, path: str, body: dict = None, audience: str = "fabric",
                 raw = resp.read()
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as e:
-            if e.code in (429, 500, 503) and attempt < retries - 1:
-                retry_after = int(e.headers.get("Retry-After", 5)) if e.code != 500 else 1
-                print(f"HTTP {e.code}, retrying in {retry_after}s…", flush=True)
-                time.sleep(retry_after)
+            if e.code in (429, 430, 500, 503) and attempt < retries - 1:
+                delay = _retry_delay(e.code, attempt, e.headers)
+                print(f"Retrying after {delay}s (attempt {attempt + 1}/{retries}): {e.code} {e.msg}", flush=True)
+                time.sleep(delay)
                 continue
             body_text = e.read().decode(errors="replace")
             print(f"HTTP {e.code} {method} {url}: {body_text}", file=sys.stderr)
@@ -70,7 +79,7 @@ def request(method: str, path: str, body: dict = None, audience: str = "fabric",
     raise RuntimeError(f"Failed after {retries} retries: {method} {path}")
 
 
-def request_multipart(method: str, path: str, file_content: bytes, filename: str, content_type: str = "text/plain", audience: str = "fabric") -> dict:
+def request_multipart(method: str, path: str, file_content: bytes, filename: str, content_type: str = "text/plain", audience: str = "fabric", retries: int = 3) -> dict:
     """Fabric REST API call with a multipart/form-data file payload.
 
     Used for endpoints that require file upload (e.g. staging/libraries).
@@ -87,18 +96,26 @@ def request_multipart(method: str, path: str, file_content: bytes, filename: str
 
     base = _AUDIENCE_BASE_URL[audience]
     url = f"{base}{path}"
-    token = get_token(audience)
-    req = urllib.request.Request(url, data=body, method=method)
-    req.add_header("Authorization", f"Bearer {token}")
-    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary.decode()}")
-    try:
-        with urllib.request.urlopen(req) as resp:
-            raw = resp.read()
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as e:
-        body_text = e.read().decode(errors="replace")
-        print(f"HTTP {e.code} {method} {url}: {body_text}", file=sys.stderr)
-        raise
+
+    for attempt in range(retries):
+        token = get_token(audience)
+        req = urllib.request.Request(url, data=body, method=method)
+        req.add_header("Authorization", f"Bearer {token}")
+        req.add_header("Content-Type", f"multipart/form-data; boundary={boundary.decode()}")
+        try:
+            with urllib.request.urlopen(req) as resp:
+                raw = resp.read()
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 430) and attempt < retries - 1:
+                delay = _retry_delay(e.code, attempt, e.headers)
+                print(f"Retrying after {delay}s (attempt {attempt + 1}/{retries}): {e.code} {e.msg}", flush=True)
+                time.sleep(delay)
+                continue
+            body_text = e.read().decode(errors="replace")
+            print(f"HTTP {e.code} {method} {url}: {body_text}", file=sys.stderr)
+            raise
+    raise RuntimeError(f"Failed after {retries} retries: {method} {path}")
 
 
 def request_long_running(

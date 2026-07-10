@@ -1,19 +1,16 @@
 # domain-ci-fabric-bundle/.github/environment/ephemeral-ci-environment.yaml
 #
 # Fabric Environment definition for ephemeral CI workspaces.
-# Owned by domain-cicd; domain repos do not configure Spark compute.
-# Changes to pool sizing or runtime version go through CI PR review.
+# Owned by domain-cicd. Changes to the runtime version go through CI PR review.
 #
-# Sets the workspace-default Spark pool and Runtime for dbt Livy sessions.
+# Spark compute (instance pool + driver/executor sizing) is domain-controlled via the
+# optional `spark_compute` stanza in the domain repo's ci-config.yml (AC-50) — this file
+# no longer owns pool sizing. The instance pool itself is always Fabric's built-in
+# Starter Pool, fixed by `fabric_api.py create_environment` and not configurable here
+# or in ci-config.yml.
+#
 # vd-dbt-fabricspark is installed at notebook runtime via pip install (cell 3)
 # because Fabric Environment pip packages do not apply to Jupyter Python kernels.
 
 name: ephemeral-ci-env
 runtime_version: "1.3"
-
-spark_pool:
-  node_size: Small
-  auto_scale:
-    enabled: true
-    min_node_count: 1
-    max_node_count: 3

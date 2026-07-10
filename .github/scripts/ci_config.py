@@ -3,12 +3,25 @@
 Extracted from preflight.py so these functions are unit-testable in isolation
 and reusable without going through the CLI shell.
 """
+import os
 import re
 
 try:
     import yaml
 except ImportError:
     yaml = None
+
+
+def locate_ci_config(root: str = ".") -> str:
+    """Return C6 config path: .github/ci-config.yml with root fallback."""
+    candidate = os.path.join(root, ".github", "ci-config.yml")
+    return ".github/ci-config.yml" if os.path.isfile(candidate) else "ci-config.yml"
+
+
+def locate_project_dir(root: str = ".") -> str:
+    """Return C6 dbt project path: transformation/ with root fallback."""
+    candidate = os.path.join(root, "transformation", "dbt_project.yml")
+    return "transformation" if os.path.isfile(candidate) else "."
 
 INTENT_SLUG_RE = re.compile(r"^intent/[a-z0-9][a-z0-9\-]+$")
 

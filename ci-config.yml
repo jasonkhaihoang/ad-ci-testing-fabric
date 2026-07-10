@@ -5,6 +5,9 @@
 #
 # VD Studio populates this file automatically at domain setup time.
 
+# Platform discriminator. Must be exactly "fabric" for this bundle.
+platform: fabric
+
 domain: sales-pipeline
 
 prod_workspace_id: 7aeb9e12-8ad0-421d-82ad-262512491e16
@@ -19,6 +22,15 @@ notebook_glob: "intents/**/*.ipynb"         # Glob pattern to find the dbt noteb
 # in the injected notebook. Must match an `outputs:` entry in your profiles.yml.
 # Defaults to "ephemeral_ci" when omitted.
 # ci_target: ephemeral_ci
+
+# VD-3229 E2E validation: override Spark driver/executor sizing on top of the fixed
+# Starter Pool (4 vCores/28g is the Starter Pool's own Medium-node size — set explicitly
+# here to exercise the ci-config.yml override-merge path against real Fabric).
+spark_compute:
+  driver_cores: 4
+  driver_memory: 28g
+  executor_cores: 4
+  executor_memory: 28g
 
 # prod_manifest_source configures how the CI pipeline fetches the production dbt manifest
 # for Slim CI (dbt build --defer --state). If omitted, greenfield fallback is used.
