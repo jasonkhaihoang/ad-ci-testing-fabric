@@ -56,3 +56,5 @@ renamed as (
 select * from renamed
 
 -- VD-2229 validation bump
+
+-- ci-test incremental-staging run marker: 092d0f8f
