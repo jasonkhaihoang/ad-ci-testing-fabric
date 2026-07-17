@@ -120,3 +120,5 @@ select * from final
 -- modified: 2026-05-11
 
 -- VD-2055/VD-2056 validation bump
+
+-- ci-test incremental-modify run marker: 23f57120
