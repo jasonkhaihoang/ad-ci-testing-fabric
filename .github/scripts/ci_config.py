@@ -13,9 +13,8 @@ except ImportError:
 
 
 def locate_ci_config(root: str = ".") -> str:
-    """Return C6 config path: .github/ci-config.yml with root fallback."""
-    candidate = os.path.join(root, ".github", "ci-config.yml")
-    return ".github/ci-config.yml" if os.path.isfile(candidate) else "ci-config.yml"
+    """Return the Studio-rendered ci-config.yml path: always .workflow/ci-config.yml."""
+    return ".workflow/ci-config.yml"
 
 
 def locate_project_dir(root: str = ".") -> str:
@@ -26,22 +25,43 @@ def locate_project_dir(root: str = ".") -> str:
 INTENT_SLUG_RE = re.compile(r"^intent/[a-z0-9][a-z0-9\-]+$")
 
 _FABRIC_REQUIRED_KEYS = [
-    "domain",
-    "prod_workspace_id",
-    "prod_workspace_name",
-    "prod_lakehouse_id",
-    "prod_lakehouse_name",
-    "prod_schema",
+    "VD_DOMAIN_SLUG",
+    "VD_DOMAIN_FABRIC_WORKSPACE_ID",
+    "VD_DOMAIN_FABRIC_WORKSPACE_NAME",
+    "VD_DOMAIN_FABRIC_LAKEHOUSE_ID",
+    "VD_DOMAIN_FABRIC_LAKEHOUSE_NAME",
 ]
 
 _MOTHERDUCK_REQUIRED_KEYS = [
-    "domain",
-    "prod_db_name",
-    "claude_api_key_kv_name",
+    "VD_DOMAIN_SLUG",
+    "VD_DOMAIN_MOTHERDUCK_DATABASE",
 ]
+
+# New (Studio-rendered) key -> legacy lowercase key every existing downstream
+# consumer (preflight.py's GITHUB_OUTPUT writer, ci.yml's `outputs.*` refs,
+# fabric_api.py) already expects. VD_DOMAIN_SCHEMA has no entry here —
+# confirmed dead (VD-3440 AC-64), dropped rather than renamed.
+_KEY_ALIASES = {
+    "VD_DOMAIN_DATA_PLATFORM": "platform",
+    "VD_DOMAIN_SLUG": "domain",
+    "VD_DOMAIN_FABRIC_WORKSPACE_ID": "prod_workspace_id",
+    "VD_DOMAIN_FABRIC_WORKSPACE_NAME": "prod_workspace_name",
+    "VD_DOMAIN_FABRIC_LAKEHOUSE_ID": "prod_lakehouse_id",
+    "VD_DOMAIN_FABRIC_LAKEHOUSE_NAME": "prod_lakehouse_name",
+    "VD_DOMAIN_MOTHERDUCK_DATABASE": "prod_db_name",
+    "VD_DOMAIN_CI_DBT_PROFILE": "ci_target",
+    "VD_DOMAIN_CI_SPARK_COMPUTE": "spark_compute",
+    "VD_DOMAIN_PROD_MANIFEST_SOURCE": "prod_manifest_source",
+}
 
 # duckdb-quack is handled below with a specific migration message before this check
 _VALID_PLATFORMS = {"fabric", "motherduck"}
+
+
+def _translate_config_keys(config: dict) -> dict:
+    """Rename recognized VD_DOMAIN_* keys to the legacy lowercase names every
+    existing consumer expects. Unrecognized keys pass through unchanged."""
+    return {_KEY_ALIASES.get(k, k): v for k, v in config.items()}
 
 
 def validate_intent_slug(branch_name: str) -> tuple[bool, str | None]:
@@ -86,7 +106,7 @@ def parse_ci_config(yaml_str: str) -> dict:
             "missing_keys": [],
         }
 
-    platform = config.get("platform")
+    platform = config.get("VD_DOMAIN_DATA_PLATFORM")
 
     if platform == "duckdb-quack":
         return {
@@ -118,4 +138,4 @@ def parse_ci_config(yaml_str: str) -> dict:
             "missing_keys": missing,
         }
 
-    return {"ok": True, "config": config, "error": None, "line_number": None, "missing_keys": []}
+    return {"ok": True, "config": _translate_config_keys(config), "error": None, "line_number": None, "missing_keys": []}

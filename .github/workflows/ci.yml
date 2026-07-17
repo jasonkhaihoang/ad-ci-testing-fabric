@@ -1,13 +1,11 @@
 # Ephemeral Fabric CI Workflow
 #
 # Self-contained — all scripts live in .github/scripts/ within this repo.
-# Domain configuration: ci-config.yml in the repo root.
+# Domain configuration: .workflow/ci-config.yml.
 #
 # Authentication: GitHub OIDC — per-domain SPN, no credentials stored (AC-31).
-# Required GitHub Variables (set at repo level):
-#   AZURE_TENANT_ID, AZURE_CLIENT_ID, DOMAIN_SLUG
-#   FABRIC_CAPACITY_ID  (repo variable — Fabric capacity GUID)
-#   AAD_DOMAIN  (optional — UPN domain for PR author lookup, defaults to eng.acceleratedata.ai)
+# Required GitHub Variables/Secrets: see ci-config.yml's *_VAR indirection keys
+# (ADR 0018) — this workflow no longer hardcodes their literal names.
 
 name: Ephemeral Fabric CI
 
@@ -45,13 +43,19 @@ jobs:
       prod_workspace_name: ${{ steps.preflight.outputs.prod_workspace_name }}
       prod_lakehouse_id: ${{ steps.preflight.outputs.prod_lakehouse_id }}
       prod_lakehouse_name: ${{ steps.preflight.outputs.prod_lakehouse_name }}
-      prod_schema: ${{ steps.preflight.outputs.prod_schema }}
       ci_target: ${{ steps.preflight.outputs.ci_target }}
       intent_slug: ${{ steps.preflight.outputs.intent_slug }}
-      domain_slug: ${{ steps.preflight.outputs.domain_slug }}
       ephemeral_name: ${{ steps.names.outputs.ephemeral_name }}
+      azure_tenant_id_var: ${{ steps.preflight.outputs.AZURE_TENANT_ID_VAR }}
+      azure_client_id_var: ${{ steps.preflight.outputs.AZURE_CLIENT_ID_VAR }}
+      fabric_capacity_id_var: ${{ steps.preflight.outputs.FABRIC_CAPACITY_ID_VAR }}
+      llm_api_key_var: ${{ steps.preflight.outputs.LLM_API_KEY_VAR }}
+      llm_api_url_var: ${{ steps.preflight.outputs.LLM_API_URL_VAR }}
+      llm_model_var: ${{ steps.preflight.outputs.LLM_MODEL_VAR }}
+      entra_id_domain_var: ${{ steps.preflight.outputs.ENTRA_ID_DOMAIN_VAR }}
     steps:
-      - uses: actions/checkout@v5
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
@@ -59,9 +63,10 @@ jobs:
       - name: Resolve layout
         run: |
           echo "PROJ=$([ -f transformation/dbt_project.yml ] && echo transformation || echo .)" >> "$GITHUB_ENV"
-          echo "CICFG=$([ -f .github/ci-config.yml ] && echo .github/ci-config.yml || echo ci-config.yml)" >> "$GITHUB_ENV"
+          echo "CICFG=.workflow/ci-config.yml" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-python@v6
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -89,6 +94,7 @@ jobs:
 
       - name: Check branch sync
         id: sync
+        if: vars.FAKE_WORLD == ''
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -112,7 +118,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          DOMAIN_SLUG: ${{ vars.DOMAIN_SLUG }}
         run: |
           mkdir -p reports
           python3 ${{ env.SCRIPTS }}/preflight.py \
@@ -207,17 +212,20 @@ jobs:
       platform_error_category: ${{ steps.fetch.outputs.category }}
       platform_error_reason: ${{ steps.fetch.outputs.reason }}
     steps:
-      - uses: actions/checkout@v5
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/checkout@v5
 
       - name: Resolve layout
         run: |
           echo "PROJ=$([ -f transformation/dbt_project.yml ] && echo transformation || echo .)" >> "$GITHUB_ENV"
-          echo "CICFG=$([ -f .github/ci-config.yml ] && echo .github/ci-config.yml || echo ci-config.yml)" >> "$GITHUB_ENV"
+          echo "CICFG=.workflow/ci-config.yml" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-python@v6
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # No dbt shim for this job — real dbt required on PATH (VD-3341). Keep unconditional.
       - run: pip install pyyaml "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
 
       - name: Emit Gate 1 pending
@@ -246,9 +254,9 @@ jobs:
           python3 - <<'EOF'
           import yaml, os, sys
           try:
-            with open(os.environ.get("CICFG", "ci-config.yml")) as f:
+            with open(os.environ.get("CICFG", ".workflow/ci-config.yml")) as f:
               c = yaml.safe_load(f) or {}
-            mode = (c.get("prod_manifest_source") or {}).get("mode", "artifact")
+            mode = (c.get("VD_DOMAIN_PROD_MANIFEST_SOURCE") or {}).get("mode", "artifact")
           except Exception:
             mode = "artifact"
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
@@ -257,12 +265,59 @@ jobs:
           EOF
 
       - name: Login — per-domain SPN (onelake mode only)
-        if: steps.parse-mode.outputs.mode == 'onelake'
+        if: steps.parse-mode.outputs.mode == 'onelake' && vars.FAKE_WORLD == ''
         uses: azure/login@v3
         with:
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars[needs.preflight.outputs.azure_tenant_id_var] }}
+          client-id: ${{ vars[needs.preflight.outputs.azure_client_id_var] }}
           allow-no-subscriptions: true
+
+      # VD-3225: E2E error-injection seam for onelake-mode fetch-failure
+      # classification. Inert unless the `E2E_ONELAKE_ERROR_INJECT` repo
+      # variable is explicitly set — every real domain repo leaves it unset,
+      # so this step is a no-op there. Test-only.
+      - name: E2E onelake error injection (test-only)
+        if: steps.parse-mode.outputs.mode == 'onelake' && vars.E2E_ONELAKE_ERROR_INJECT != ''
+        run: |
+          SCENARIO="${{ vars.E2E_ONELAKE_ERROR_INJECT }}"
+          echo "E2E error injection active: scenario=$SCENARIO"
+          case "$SCENARIO" in
+            401|403|500)
+              cat > /tmp/onelake_stub_server.py <<'PYEOF'
+          import http.server, sys
+          STATUS = int(sys.argv[1])
+          class Handler(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(STATUS)
+                  self.send_header("Content-Type", "application/json")
+                  self.end_headers()
+                  self.wfile.write(b'{"error":"injected"}')
+              def log_message(self, *a):
+                  pass
+          http.server.HTTPServer(("127.0.0.1", 8899), Handler).serve_forever()
+          PYEOF
+              nohup python3 /tmp/onelake_stub_server.py "$SCENARIO" >/tmp/onelake_stub.log 2>&1 &
+              for i in $(seq 1 20); do
+                python3 -c "import socket; socket.create_connection(('127.0.0.1', 8899), timeout=0.5).close()" 2>/dev/null && break
+                sleep 0.25
+              done
+              echo "ONELAKE_DFS_BASE_URL=http://127.0.0.1:8899" >> "$GITHUB_ENV"
+              ;;
+            az_auth_fail)
+              mkdir -p /tmp/az_shim
+              cat > /tmp/az_shim/az <<'SHEOF'
+          #!/usr/bin/env bash
+          echo "az: injected auth failure (E2E test)" >&2
+          exit 1
+          SHEOF
+              chmod +x /tmp/az_shim/az
+              echo "/tmp/az_shim" >> "$GITHUB_PATH"
+              ;;
+            *)
+              echo "ERROR: unknown E2E_ONELAKE_ERROR_INJECT scenario '$SCENARIO' — expected one of 401|403|500|az_auth_fail" >&2
+              exit 1
+              ;;
+          esac
 
       - name: Fetch prod state
         id: fetch
@@ -346,8 +401,94 @@ jobs:
           )
           EOF
 
+  # ─── GATE 1 COMMENT ──────────────────────────────────────────────────────────
+  # Posts the ci/state-modified+ PR comment (closure table, or Mode/Category/
+  # Reason on platform error). Decoupled from provision-workspace, which
+  # `needs: fetch-prod-state` and is entirely skipped on a Gate 1 failure — a
+  # step-level `if: always()` inside a skipped job never runs. This job needs
+  # only `fetch-prod-state` and carries its own `if: always()`, so the
+  # structured comment posts on every outcome, including a platform error.
+  # (VD-3225: found live — AC-14's comment never posted on any Gate 1 failure
+  # before this fix, artifact mode included.)
+  gate-1-comment:
+    name: "ci/state-modified+: post comment"
+    # Fires only when fetch-prod-state actually concluded (success or failure) —
+    # not when it was itself skipped by an upstream preflight failure, which
+    # already gets its own ci/preflight comment and has nothing to do with
+    # state-modified+ resolution.
+    if: always() && (needs.fetch-prod-state.result == 'success' || needs.fetch-prod-state.result == 'failure') && github.event.action != 'closed'
+    needs: [preflight, fetch-prod-state]
+    runs-on: ubuntu-latest
+    steps:
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/checkout@v5
+
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Download deployment manifest artifact
+        if: needs.fetch-prod-state.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: deployment-manifest-${{ github.event.pull_request.head.sha }}
+          path: reports/
+        continue-on-error: true
+
+      - name: Post gate-1 comment
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GREENFIELD_FALLBACK: ${{ needs.fetch-prod-state.outputs.greenfield_fallback }}
+          PLATFORM_ERROR_MODE: ${{ needs.fetch-prod-state.outputs.platform_error_mode }}
+          PLATFORM_ERROR_CATEGORY: ${{ needs.fetch-prod-state.outputs.platform_error_category }}
+          PLATFORM_ERROR_REASON: ${{ needs.fetch-prod-state.outputs.platform_error_reason }}
+          GATE1_JOB_STATUS: ${{ needs.fetch-prod-state.result }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          SCRIPTS_DIR: ${{ env.SCRIPTS }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys
+          sys.path.insert(0, os.environ["GITHUB_WORKSPACE"] + "/" + os.environ["SCRIPTS_DIR"])
+          import notify_render, pr_comment
+          greenfield = os.environ.get("GREENFIELD_FALLBACK", "false").lower() == "true"
+          passed = os.environ.get("GATE1_JOB_STATUS", "failure").lower() == "success"
+          category = os.environ.get("PLATFORM_ERROR_CATEGORY", "")
+          platform_error = None
+          if category:
+              platform_error = {
+                  "mode": os.environ.get("PLATFORM_ERROR_MODE", "artifact"),
+                  "category": category,
+                  "reason": os.environ.get("PLATFORM_ERROR_REASON", ""),
+              }
+          head_sha = os.environ.get("HEAD_SHA", "")
+          closure = []
+          try:
+              manifest_path = f"reports/deployment-manifest-{head_sha}.json"
+              with open(manifest_path) as f:
+                  dm = json.load(f)
+              for a in dm.get("artifacts", []):
+                  closure.append({
+                      "name": a.get("name", "").split(".")[-1],
+                      "materialization": a.get("materialized", "unknown"),
+                      "closure_source": a.get("closure_source", "descendant"),
+                  })
+          except (FileNotFoundError, json.JSONDecodeError):
+              closure = []
+          body = notify_render.render_gate_1_comment(
+              closure,
+              greenfield=greenfield,
+              passed=passed,
+              platform_error=platform_error,
+          )
+          pr_comment.upsert(notify_render.GATE_1_MARKER, body, os.environ["PR_NUMBER"], os.environ["REPO"])
+          EOF
+
   # ─── DESIGN DRIFT ────────────────────────────────────────────────────────────
-  # Runner-side LLM gate: compares intents/<intent-id>/design.md against state:modified.
+  # Runner-side LLM gate: compares intent/<intent-id>/design.md against state:modified.
   # Hard DAG gate: provision-workspace needs this job so a drift failure short-circuits
   # the ephemeral workspace + Spark provision before any compute is spent (AC-8).
   design-drift:
@@ -361,17 +502,20 @@ jobs:
       statuses: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v5
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/checkout@v5
 
       - name: Resolve layout
         run: |
           echo "PROJ=$([ -f transformation/dbt_project.yml ] && echo transformation || echo .)" >> "$GITHUB_ENV"
-          echo "CICFG=$([ -f .github/ci-config.yml ] && echo .github/ci-config.yml || echo ci-config.yml)" >> "$GITHUB_ENV"
+          echo "CICFG=.workflow/ci-config.yml" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-python@v6
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # No dbt shim for this job — real dbt required on PATH (VD-3341). Keep unconditional.
       - run: pip install pyyaml "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
 
       - name: Emit ci/design-drift pending
@@ -426,9 +570,9 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_RUN_ID: ${{ github.run_id }}
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          LLM_API_URL: ${{ vars.LLM_API_URL }}
-          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_API_KEY: ${{ secrets[needs.preflight.outputs.llm_api_key_var] }}
+          LLM_API_URL: ${{ vars[needs.preflight.outputs.llm_api_url_var] }}
+          LLM_MODEL: ${{ vars[needs.preflight.outputs.llm_model_var] }}
         run: |
           python3 ${{ env.SCRIPTS }}/design_drift_runner.py \
             --pr-number  "${{ github.event.pull_request.number }}" \
@@ -475,17 +619,20 @@ jobs:
       statuses: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v5
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/checkout@v5
 
       - name: Resolve layout
         run: |
           echo "PROJ=$([ -f transformation/dbt_project.yml ] && echo transformation || echo .)" >> "$GITHUB_ENV"
-          echo "CICFG=$([ -f .github/ci-config.yml ] && echo .github/ci-config.yml || echo ci-config.yml)" >> "$GITHUB_ENV"
+          echo "CICFG=.workflow/ci-config.yml" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-python@v6
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # No dbt shim for this job — real dbt required on PATH (VD-3341). Keep unconditional.
       - run: pip install pyyaml "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
 
       - name: Emit ci/orchestration pending
@@ -562,17 +709,20 @@ jobs:
       statuses: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v5
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/checkout@v5
 
       - name: Resolve layout
         run: |
           echo "PROJ=$([ -f transformation/dbt_project.yml ] && echo transformation || echo .)" >> "$GITHUB_ENV"
-          echo "CICFG=$([ -f .github/ci-config.yml ] && echo .github/ci-config.yml || echo ci-config.yml)" >> "$GITHUB_ENV"
+          echo "CICFG=.workflow/ci-config.yml" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-python@v6
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # No dbt shim for this job — real dbt required on PATH (VD-3341). Keep unconditional.
       - run: pip install pyyaml "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
 
       - name: Emit ci/semantic-model pending
@@ -646,24 +796,27 @@ jobs:
       lakehouse_name: ${{ steps.provision.outputs.lakehouse_name }}
       interactive_notebook_id: ${{ steps.generate-notebook.outputs.interactive_notebook_id }}
     steps:
-      - uses: actions/checkout@v5
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/checkout@v5
 
       - name: Resolve layout
         run: |
           echo "PROJ=$([ -f transformation/dbt_project.yml ] && echo transformation || echo .)" >> "$GITHUB_ENV"
-          echo "CICFG=$([ -f .github/ci-config.yml ] && echo .github/ci-config.yml || echo ci-config.yml)" >> "$GITHUB_ENV"
+          echo "CICFG=.workflow/ci-config.yml" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-python@v6
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - run: pip install pyyaml --quiet
 
       - name: Login — per-domain SPN
+        if: vars.FAKE_WORLD == ''
         uses: azure/login@v3
         with:
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars[needs.preflight.outputs.azure_tenant_id_var] }}
+          client-id: ${{ vars[needs.preflight.outputs.azure_client_id_var] }}
           allow-no-subscriptions: true
 
       - name: Emit ci/provision pending
@@ -695,7 +848,7 @@ jobs:
         id: provision
         env:
           EPHEMERAL_NAME: ${{ needs.preflight.outputs.ephemeral_name }}
-          FABRIC_CAPACITY_ID: ${{ vars.FABRIC_CAPACITY_ID }}
+          FABRIC_CAPACITY_ID: ${{ vars[needs.preflight.outputs.fabric_capacity_id_var] }}
         run: python3 ${{ env.SCRIPTS }}/fabric_api.py provision --name "$EPHEMERAL_NAME"
 
       - name: Create Fabric Environment from bundle
@@ -723,7 +876,7 @@ jobs:
 
       - name: Add PR author as Admin on ephemeral workspace
         env:
-          AAD_DOMAIN: ${{ vars.AAD_DOMAIN }}
+          AAD_DOMAIN: ${{ vars[needs.preflight.outputs.entra_id_domain_var] }}
           AAD_UPN_OVERRIDE: ${{ secrets.AAD_UPN_OVERRIDE }}
         run: |
           python3 ${{ env.SCRIPTS }}/fabric_api.py add-contributor \
@@ -807,58 +960,6 @@ jobs:
           path: reports/deployment-manifest-${{ github.event.pull_request.head.sha }}.json
           if-no-files-found: error
           retention-days: 30
-
-      - name: Post gate-1 comment
-        if: always()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GREENFIELD_FALLBACK: ${{ needs.fetch-prod-state.outputs.greenfield_fallback }}
-          PLATFORM_ERROR_MODE: ${{ needs.fetch-prod-state.outputs.platform_error_mode }}
-          PLATFORM_ERROR_CATEGORY: ${{ needs.fetch-prod-state.outputs.platform_error_category }}
-          PLATFORM_ERROR_REASON: ${{ needs.fetch-prod-state.outputs.platform_error_reason }}
-          GATE1_JOB_STATUS: ${{ needs.fetch-prod-state.result }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-          SCRIPTS_DIR: ${{ env.SCRIPTS }}
-        run: |
-          python3 - <<'EOF'
-          import json, os, sys
-          sys.path.insert(0, os.environ["GITHUB_WORKSPACE"] + "/" + os.environ["SCRIPTS_DIR"])
-          import notify_render, pr_comment
-          greenfield = os.environ.get("GREENFIELD_FALLBACK", "false").lower() == "true"
-          passed = os.environ.get("GATE1_JOB_STATUS", "failure").lower() == "success"
-          category = os.environ.get("PLATFORM_ERROR_CATEGORY", "")
-          platform_error = None
-          if category:
-              platform_error = {
-                  "mode": os.environ.get("PLATFORM_ERROR_MODE", "artifact"),
-                  "category": category,
-                  "reason": os.environ.get("PLATFORM_ERROR_REASON", ""),
-              }
-          head_sha = os.environ.get("HEAD_SHA", "")
-          closure = []
-          try:
-              manifest_path = f"reports/deployment-manifest-{head_sha}.json"
-              with open(manifest_path) as f:
-                  dm = json.load(f)
-              for a in dm.get("artifacts", []):
-                  closure.append({
-                      "name": a.get("name", "").split(".")[-1],
-                      "materialization": a.get("materialized", "unknown"),
-                      "closure_source": a.get("closure_source", "descendant"),
-                  })
-          except (FileNotFoundError, json.JSONDecodeError):
-              closure = []
-          body = notify_render.render_gate_1_comment(
-              closure,
-              greenfield=greenfield,
-              passed=passed,
-              platform_error=platform_error,
-          )
-          pr_comment.upsert(notify_render.GATE_1_MARKER, body, os.environ["PR_NUMBER"], os.environ["REPO"])
-          EOF
 
       - name: Upload shortcut seeding report
         uses: actions/upload-artifact@v7
@@ -952,21 +1053,27 @@ jobs:
     needs: [preflight]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/checkout@v5
 
       - name: Resolve layout
         run: |
           echo "PROJ=$([ -f transformation/dbt_project.yml ] && echo transformation || echo .)" >> "$GITHUB_ENV"
-          echo "CICFG=$([ -f .github/ci-config.yml ] && echo .github/ci-config.yml || echo ci-config.yml)" >> "$GITHUB_ENV"
+          echo "CICFG=.workflow/ci-config.yml" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-python@v6
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install analysis tools
         run: |
           pip install ruff sqlfluff pyyaml "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
-          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
+          case "$(uname -m)" in
+            arm64|aarch64) GITLEAKS_ARCH=linux_arm64 ;;
+            *)              GITLEAKS_ARCH=linux_x64 ;;
+          esac
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_${GITLEAKS_ARCH}.tar.gz" \
             | tar xz -C /usr/local/bin gitleaks
 
       - run: mkdir -p reports
@@ -1208,24 +1315,34 @@ jobs:
       cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.head_ref }}
 
-      - uses: actions/setup-python@v6
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - run: pip install pyyaml --quiet
+
       - name: Install dbt-fabricspark
-        run: pip install pyyaml "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
+        if: vars.FAKE_WORLD == ''
+        run: pip install "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
+
+      - name: Add fake-world dbt shim to PATH
+        if: vars.FAKE_WORLD != ''
+        run: echo "/fakeworld-shims" >> "$GITHUB_PATH"
 
       - run: mkdir -p reports
 
       - name: Login — per-domain SPN
+        if: vars.FAKE_WORLD == ''
         uses: azure/login@v3
         with:
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars[needs.preflight.outputs.azure_tenant_id_var] }}
+          client-id: ${{ vars[needs.preflight.outputs.azure_client_id_var] }}
           allow-no-subscriptions: true
 
       - name: Download deployment manifest
@@ -1293,24 +1410,34 @@ jobs:
       cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.head_ref }}
 
-      - uses: actions/setup-python@v6
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - run: pip install pyyaml --quiet
+
       - name: Install dbt-fabricspark
-        run: pip install pyyaml "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
+        if: vars.FAKE_WORLD == ''
+        run: pip install "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
+
+      - name: Add fake-world dbt shim to PATH
+        if: vars.FAKE_WORLD != ''
+        run: echo "/fakeworld-shims" >> "$GITHUB_PATH"
 
       - run: mkdir -p reports
 
       - name: Login — per-domain SPN
+        if: vars.FAKE_WORLD == ''
         uses: azure/login@v3
         with:
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars[needs.preflight.outputs.azure_tenant_id_var] }}
+          client-id: ${{ vars[needs.preflight.outputs.azure_client_id_var] }}
           allow-no-subscriptions: true
 
       - name: Download prod-state artifact
@@ -1378,24 +1505,34 @@ jobs:
       cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.head_ref }}
 
-      - uses: actions/setup-python@v6
+      - if: vars.FAKE_WORLD == ''
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - run: pip install pyyaml --quiet
+
       - name: Install dbt-fabricspark
-        run: pip install pyyaml "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
+        if: vars.FAKE_WORLD == ''
+        run: pip install "dbt-core>=1.8" "dbt-fabricspark>=1.8" --quiet
+
+      - name: Add fake-world dbt shim to PATH
+        if: vars.FAKE_WORLD != ''
+        run: echo "/fakeworld-shims" >> "$GITHUB_PATH"
 
       - run: mkdir -p reports
 
       - name: Login — per-domain SPN
+        if: vars.FAKE_WORLD == ''
         uses: azure/login@v3
         with:
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars[needs.preflight.outputs.azure_tenant_id_var] }}
+          client-id: ${{ vars[needs.preflight.outputs.azure_client_id_var] }}
           allow-no-subscriptions: true
 
       - name: Download prod-state artifact

@@ -19,7 +19,8 @@ import urllib.request
 
 def emit_status(repo: str, sha: str, context: str, state: str, description: str, target_url: str) -> None:
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
-    url = f"https://api.github.com/repos/{repo}/statuses/{sha}"
+    base_url = os.environ.get("GITHUB_API_BASE_URL", "https://api.github.com")
+    url = f"{base_url}/repos/{repo}/statuses/{sha}"
     payload = json.dumps({
         "state": state,
         "context": context,

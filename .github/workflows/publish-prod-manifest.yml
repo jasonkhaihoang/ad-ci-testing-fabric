@@ -21,7 +21,7 @@ jobs:
       - name: Resolve layout
         run: |
           echo "PROJ=$([ -f transformation/dbt_project.yml ] && echo transformation || echo .)" >> "$GITHUB_ENV"
-          echo "CICFG=$([ -f .github/ci-config.yml ] && echo .github/ci-config.yml || echo ci-config.yml)" >> "$GITHUB_ENV"
+          echo "CICFG=.workflow/ci-config.yml" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@v6
         with:
@@ -35,17 +35,18 @@ jobs:
           python3 - <<'PYEOF'
           import yaml, os, sys
 
-          with open(os.environ.get("CICFG", "ci-config.yml")) as f:
+          with open(os.environ.get("CICFG", ".workflow/ci-config.yml")) as f:
               config = yaml.safe_load(f) or {}
 
-          workspace_id   = config.get("prod_workspace_id", "")
-          workspace_name = config.get("prod_workspace_name", "")
-          lakehouse_id   = config.get("prod_lakehouse_id", "")
-          lakehouse      = config.get("prod_lakehouse_name", "")
-          schema         = config.get("prod_schema", "main")
+          workspace_id   = config.get("VD_DOMAIN_FABRIC_WORKSPACE_ID", "")
+          workspace_name = config.get("VD_DOMAIN_FABRIC_WORKSPACE_NAME", "")
+          lakehouse_id   = config.get("VD_DOMAIN_FABRIC_LAKEHOUSE_ID", "")
+          lakehouse      = config.get("VD_DOMAIN_FABRIC_LAKEHOUSE_NAME", "")
+          schema         = "dummy"  # AC-64: VD_DOMAIN_SCHEMA dropped — confirmed dead,
+                                     # matches the ephemeral profile's own placeholder convention
 
           if not all([workspace_id, workspace_name, lakehouse_id, lakehouse]):
-              print("ci-config.yml missing prod_workspace_id / prod_workspace_name / prod_lakehouse_id / prod_lakehouse_name — cannot generate prod-manifest profile.", flush=True)
+              print("ci-config.yml missing VD_DOMAIN_FABRIC_WORKSPACE_ID / VD_DOMAIN_FABRIC_WORKSPACE_NAME / VD_DOMAIN_FABRIC_LAKEHOUSE_ID / VD_DOMAIN_FABRIC_LAKEHOUSE_NAME — cannot generate prod-manifest profile.", flush=True)
               sys.exit(1)
 
           with open(".github/profiles/profiles.yml") as f:

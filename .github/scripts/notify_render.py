@@ -446,7 +446,17 @@ def render_gate_2(result: dict | None) -> str:
         snippet_block = ""
         if local_dbt_snippet:
             snippet_block = f"\n🖥️ **Run dbt locally:**\n\n```bash\n{local_dbt_snippet}\n```\n"
-        sections.append(f"\n### Developer surfaces\n\n{dive_line}{snippet_block}")
+        share_warning = ""
+        if result.get("share_creation_failed"):
+            # VD-3330: share creation (VD-3321) failed after the Dive was created — the
+            # Dive link above still resolves for the CI service account but may not
+            # resolve for the PR author. Non-blocking: Gate 2's pass/fail is unaffected.
+            share_warning = (
+                "\n> ⚠️ **Advisory:** the read-only data share for this PR's database "
+                "failed to create. The Dive link above may not resolve for anyone other "
+                "than the CI service account. Gate signal is unaffected.\n"
+            )
+        sections.append(f"\n### Developer surfaces\n\n{dive_line}{snippet_block}{share_warning}")
 
     return "".join(sections)
 

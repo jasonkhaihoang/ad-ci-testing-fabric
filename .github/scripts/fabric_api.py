@@ -54,7 +54,7 @@ except ImportError:  # invoked as `python3 path/to/fabric_api.py`
 
 
 GITHUB_API = "https://api.github.com"
-ONELAKE_DFS = "https://onelake.dfs.fabric.microsoft.com"
+ONELAKE_DFS = os.environ.get("ONELAKE_DFS_BASE_URL", "https://onelake.dfs.fabric.microsoft.com")
 
 AAD_DOMAIN_DEFAULT = "eng.acceleratedata.ai"
 
@@ -476,10 +476,10 @@ def _load_spark_compute_overrides(ci_config_path: str) -> dict:
     with open(ci_config_path) as f:
         ci_config = yaml.safe_load(f) or {}
 
-    spark_compute = ci_config.get("spark_compute") or {}
+    spark_compute = ci_config.get("VD_DOMAIN_CI_SPARK_COMPUTE") or {}
     if not isinstance(spark_compute, dict):
         raise ValueError(
-            f"ci-config.yml 'spark_compute' must be a mapping, got {type(spark_compute).__name__}"
+            f"ci-config.yml 'VD_DOMAIN_CI_SPARK_COMPUTE' must be a mapping, got {type(spark_compute).__name__}"
         )
 
     overrides = _translate_keys(spark_compute, {
@@ -523,7 +523,8 @@ def create_environment(workspace_id: str, config_path: str, ci_config_path: str 
 
     # Create or reuse the environment
     env_id = _find_existing_environment(workspace_id, env_name)
-    if env_id:
+    reused_existing = env_id is not None
+    if reused_existing:
         print(f"Reusing existing environment '{env_name}' ({env_id})", flush=True)
     else:
         resp = fabric_transport.request(
@@ -536,21 +537,29 @@ def create_environment(workspace_id: str, config_path: str, ci_config_path: str 
 
     # Always configure spark compute against the fixed Starter Pool, merging in
     # any domain-supplied driver/executor overrides (AC-50).
-    # Skip when already published — re-PATCHing staging on a published environment
-    # triggers full pool-size validation and fails on constrained capacities (e.g. F4's
-    # Starter Pool cap). Settings are stable once published; they only change on a bundle
-    # or ci-config.yml upgrade, which always arrives on a fresh workspace (supersession or new PR).
-    env_detail = fabric_transport.request(
-        "GET", f"/workspaces/{workspace_id}/environments/{env_id}"
-    )
-    publish_state = (
-        env_detail.get("properties", {})
-        .get("publishDetails", {})
-        .get("state", "")
-    )
-    if publish_state == "Success":
+    # Skip only when REUSING an environment that was already published on a prior
+    # push to this same PR — re-PATCHing staging on a published environment triggers
+    # full pool-size validation and fails on constrained capacities (e.g. F4's Starter
+    # Pool cap). A freshly created environment always gets PATCHed unconditionally:
+    # Fabric reports publishDetails.state == "Success" on a brand-new environment
+    # even though nothing has been staged yet (nothing pending == trivially "in sync"),
+    # so checking that state on a fresh environment would wrongly skip its first-ever
+    # configuration.
+    already_published = False
+    if reused_existing:
+        env_detail = fabric_transport.request(
+            "GET", f"/workspaces/{workspace_id}/environments/{env_id}"
+        )
+        publish_state = (
+            env_detail.get("properties", {})
+            .get("publishDetails", {})
+            .get("state", "")
+        )
+        already_published = publish_state == "Success"
+
+    if already_published:
         print(
-            f"Environment already published (state: {publish_state}) — "
+            "Environment already published (state: Success) — "
             "skipping sparkcompute reconfigure.",
             flush=True,
         )
