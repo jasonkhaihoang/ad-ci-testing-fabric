@@ -1,21 +1,10 @@
 # Sales Pipeline dbt Project — Design
 
-CI verification design doc for the `e2e-test-vd3472` intent — documents every
-model in the `sales-pipeline` dbt project so `ci/design-drift` can compare it
-against the full `state:modified` set produced by a greenfield run (no prod
-manifest to defer against, so every model in the project is "modified").
+CI verification design doc for the `e2e-test-vd3472-staging` intent — documents the
+modified-upstream closure (stg_salescloud__opportunity + downstream) for this PR's
+`state:modified+` set.
 
 ## Staging models
-
-### stg_salescloud__account
-View. Cleaned Salesforce Account object.
-Columns: account_id, account_name, account_type, billing_city, billing_country,
-billing_state, created_date, industry, is_deleted, last_modified_date, owner_id.
-
-### stg_salescloud__user
-View. Cleaned Salesforce User object.
-Columns: created_date, email, is_active, job_title, last_modified_date,
-profile_id, user_id, user_name, user_role_id, username.
 
 ### stg_salescloud__opportunity
 View. Cleaned Salesforce Opportunity object.
@@ -23,24 +12,6 @@ Columns: account_id, amount, close_date, created_date, expected_revenue,
 fiscal_quarter, fiscal_year, is_closed, is_deleted, is_won, last_modified_date,
 last_stage_change_date, lead_source, opportunity_id, opportunity_name,
 opportunity_type, owner_id, probability, stage_name, system_modified_timestamp.
-
-### stg_salescloud__opportunitylineitem
-View. Cleaned Salesforce OpportunityLineItem object.
-Columns: created_date, description, discount, line_item_id, opportunity_id,
-pricebook_entry_id, product_code, product_id, product_name, quantity,
-service_date, sort_order, total_price, unit_price.
-
-## Dimension models
-
-### dim_account
-Table. Account dimension built from stg_salescloud__account.
-Columns: account_id, account_name, account_type, billing_city, billing_country,
-billing_state, created_date, industry, last_modified_date, owner_id.
-
-### dim_user
-Table. User dimension built from stg_salescloud__user.
-Columns: created_date, email, is_active, job_title, last_modified_date,
-profile_id, user_id, user_name, user_role_id, username.
 
 ## Fact models
 
