@@ -1,0 +1,42 @@
+# Domain CI Configuration
+#
+# This file is fully rendered by VD Studio at every Intent container spawn —
+# do not hand-edit or expect edits to persist across spawns.
+
+# Platform discriminator. Must be exactly "fabric" for this bundle.
+VD_DOMAIN_DATA_PLATFORM: fabric
+
+VD_DOMAIN_SLUG: sales-pipeline
+
+VD_DOMAIN_FABRIC_WORKSPACE_ID: 7aeb9e12-8ad0-421d-82ad-262512491e16
+VD_DOMAIN_FABRIC_WORKSPACE_NAME: vibedata_prd_sales_pipeline
+VD_DOMAIN_FABRIC_LAKEHOUSE_ID: fe90ede0-e379-446e-9e69-1b487dc71946
+VD_DOMAIN_FABRIC_LAKEHOUSE_NAME: lh_prd_salespipeline
+
+# GHA Variable/Secret name indirection (ADR 0018). Values here are the *names*
+# Studio provisions as repo Variables/Secrets, matched to this fixture repo's
+# actual `gh variable list`/`gh secret list` output.
+AZURE_TENANT_ID_VAR: AZURE_TENANT_ID
+AZURE_CLIENT_ID_VAR: AZURE_CLIENT_ID
+FABRIC_CAPACITY_ID_VAR: FABRIC_CAPACITY_ID
+LLM_API_KEY_VAR: LLM_API_KEY
+LLM_API_URL_VAR: LLM_API_URL
+LLM_MODEL_VAR: LLM_MODEL
+
+# Optional. Overrides Spark driver/executor sizing (carried over from the
+# fixture's prior root ci-config.yml override).
+VD_DOMAIN_CI_SPARK_COMPUTE:
+  driver_cores: 4
+  driver_memory: 28g
+  executor_cores: 4
+  executor_memory: 28g
+
+# VD_DOMAIN_PROD_MANIFEST_SOURCE configures how the CI pipeline fetches the
+# production dbt manifest for Slim CI (dbt build --defer --state). If omitted,
+# greenfield fallback is used.
+
+VD_DOMAIN_PROD_MANIFEST_SOURCE:
+  mode: artifact
+  workflow: publish-prod-manifest.yml
+  artifact_name: prod-manifest
+  main_branch: main
