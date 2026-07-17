@@ -11,6 +11,7 @@ Audiences: fabric, powerbi, storage.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -18,8 +19,21 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-FABRIC_API = "https://api.fabric.microsoft.com/v1"
-POWERBI_API = "https://api.powerbi.com/v1.0/myorg"
+def _fabric_api_base() -> str:
+    """Read FABRIC_API_BASE_URL per call (not at import time) so a fake-world
+    test can override it without reloading this module — same pattern as
+    emit_status.py's GITHUB_API_BASE_URL / fetch_prod_state.py's
+    ONELAKE_DFS_BASE_URL."""
+    return os.environ.get("FABRIC_API_BASE_URL", "https://api.fabric.microsoft.com/v1")
+
+
+def _powerbi_api_base() -> str:
+    """Read POWERBI_API_BASE_URL per call — same pattern as _fabric_api_base()."""
+    return os.environ.get("POWERBI_API_BASE_URL", "https://api.powerbi.com/v1.0/myorg")
+
+
+FABRIC_API = _fabric_api_base()  # kept for existing external readers; reflects env at import time only
+POWERBI_API = _powerbi_api_base()  # kept for existing external readers; reflects env at import time only
 
 _AUDIENCE_RESOURCE: dict[str, str] = {
     "fabric": "https://api.fabric.microsoft.com",
@@ -27,10 +41,13 @@ _AUDIENCE_RESOURCE: dict[str, str] = {
     "storage": "https://storage.azure.com",
 }
 
-_AUDIENCE_BASE_URL: dict[str, str] = {
-    "fabric": FABRIC_API,
-    "powerbi": POWERBI_API,
-}
+
+def _base_url(audience: str) -> str:
+    if audience == "fabric":
+        return _fabric_api_base()
+    if audience == "powerbi":
+        return _powerbi_api_base()
+    raise KeyError(audience)
 
 
 def get_token(audience: str) -> str:
@@ -54,7 +71,7 @@ def _retry_delay(code: int, attempt: int, headers) -> int:
 
 def request(method: str, path: str, body: dict = None, audience: str = "fabric", retries: int = 3) -> dict:
     """Fabric REST API call with retry on 429/430/500/503 honoring Retry-After."""
-    base = _AUDIENCE_BASE_URL[audience]
+    base = _base_url(audience)
     url = f"{base}{path}"
     data = json.dumps(body).encode() if body else None
 
@@ -94,7 +111,7 @@ def request_multipart(method: str, path: str, file_content: bytes, filename: str
         b"\r\n--" + boundary + b"--\r\n"
     )
 
-    base = _AUDIENCE_BASE_URL[audience]
+    base = _base_url(audience)
     url = f"{base}{path}"
 
     for attempt in range(retries):
@@ -127,7 +144,7 @@ def request_long_running(
     Returns the initial response body dict (contains item id on 201; empty on 202).
     Raises RuntimeError on LRO failure or timeout.
     """
-    base = _AUDIENCE_BASE_URL[audience]
+    base = _base_url(audience)
     url = f"{base}{path}"
     token = get_token(audience)
     data = json.dumps(body).encode()
@@ -147,7 +164,7 @@ def request_long_running(
         raise
 
     if not location and "operationId" in parsed:
-        location = f"{FABRIC_API}/operations/{parsed['operationId']}"
+        location = f"{_fabric_api_base()}/operations/{parsed['operationId']}"
 
     if status == 202:
         _poll_operation(location, token, timeout_s, poll_interval_s)

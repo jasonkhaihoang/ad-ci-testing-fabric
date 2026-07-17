@@ -24,8 +24,7 @@ import urllib.error
 import urllib.request
 from typing import NamedTuple
 
-import yaml
-
+import ci_config
 import fabric_transport
 import runner_io
 
@@ -216,7 +215,8 @@ def fetch_onelake_mode(cfg: dict) -> OnelakeResult:
         runner_io.error(reason)
         return OnelakeResult("error", "config", reason)
 
-    url = f"{ONELAKE_DFS}/{workspace_id}/{lakehouse_id}/{file_path}"
+    base_url = os.environ.get("ONELAKE_DFS_BASE_URL", ONELAKE_DFS)
+    url = f"{base_url}/{workspace_id}/{lakehouse_id}/{file_path}"
 
     try:
         token = fabric_transport.get_token("storage")
@@ -362,12 +362,13 @@ def load_config() -> dict | None:
     A wholly missing ci-config.yml means the repo has not been onboarded to
     Slim CI; callers treat that as greenfield (not a platform error).
     """
-    config_path = "ci-config.yml"
+    config_path = ci_config.locate_ci_config()
     if not os.path.exists(config_path):
         runner_io.warning("ci-config.yml not found — using greenfield fallback.")
         return None
     with open(config_path) as f:
-        return yaml.safe_load(f) or {}
+        yaml_str = f.read()
+    return ci_config.parse_ci_config(yaml_str)["config"]
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
