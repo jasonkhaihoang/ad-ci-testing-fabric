@@ -58,3 +58,4 @@ select * from renamed
 -- VD-2229 validation bump
 -- VD-4221 validation bump
 -- VD-4221 validation bump (round 2, post-bundle-deploy)
+-- VD-4221 round 3 (asset-replace check)
