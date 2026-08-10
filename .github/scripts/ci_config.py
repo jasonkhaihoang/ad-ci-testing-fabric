@@ -111,7 +111,7 @@ def parse_ci_config(yaml_str: str) -> dict:
     if platform == "duckdb-quack":
         return {
             "ok": False,
-            "config": config,
+            "config": _translate_config_keys(config),
             "error": "platform: duckdb-quack is no longer supported. Use platform: motherduck instead.",
             "line_number": None,
             "missing_keys": [],
@@ -120,7 +120,7 @@ def parse_ci_config(yaml_str: str) -> dict:
     if platform is not None and platform not in _VALID_PLATFORMS:
         return {
             "ok": False,
-            "config": config,
+            "config": _translate_config_keys(config),
             "error": f"Unknown platform: {platform!r}. Valid values: {', '.join(sorted(_VALID_PLATFORMS))}.",
             "line_number": None,
             "missing_keys": [],
@@ -132,7 +132,7 @@ def parse_ci_config(yaml_str: str) -> dict:
     if missing:
         return {
             "ok": False,
-            "config": config,
+            "config": _translate_config_keys(config),
             "error": f"Missing required keys: {missing}",
             "line_number": None,
             "missing_keys": missing,

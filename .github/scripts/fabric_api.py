@@ -11,10 +11,19 @@ Commands:
   cleanup          --repo OWNER/REPO
                    List all vibedata_ephemeral_* workspaces. Delete those whose PR is closed.
 
-  add-contributor  --workspace-id ID --github-login LOGIN
+  add-contributor  --workspace-id ID --github-login LOGIN --pr-number N --repo OWNER/REPO
                    Add the PR author as Admin via the Power BI REST API.
-                   UPN is constructed as {github_login}@{AAD_DOMAIN}.
-                   In production, GitHub SAML SSO ensures the login matches the UPN prefix.
+                   UPN resolution order:
+                     1. Trusted PR-metadata UPN — a `<!-- entra-upn: {upn} -->` comment
+                        posted by TRUSTED_PR_METADATA_AUTHOR (the Domain's GitHub App
+                        installation, per studio VD-3764 — NOT the PR-opening per-user
+                        credential, which provides no trust boundary). A marker-matching
+                        comment from any other account is not eligible and is treated as
+                        absent.
+                     2. ENTRA_ID_UPN_OVERRIDE env var — used as-is (dev/test escape hatch for
+                        accounts whose GitHub login does not match their AAD UPN prefix).
+                     3. {github_login}@{ENTRA_ID_DOMAIN} — correct in production where GitHub
+                        SAML SSO enforces that the GitHub login equals the AAD UPN prefix.
                    Warns and continues if the user is not found; never blocks CI.
 
 Authentication: GitHub OIDC via azure/login. No SPN credentials stored.
@@ -25,8 +34,8 @@ Required env var:
   AZURE_KEYVAULT_URL — used by kv_utils to fetch vibedata-fabric-capacity-id
 
 Optional env vars (add-contributor):
-  AAD_DOMAIN        — UPN suffix (default: eng.acceleratedata.ai)
-  AAD_UPN_OVERRIDE  — Use this UPN directly, bypassing {github_login}@{AAD_DOMAIN}
+  ENTRA_ID_DOMAIN        — UPN suffix (default: eng.acceleratedata.ai)
+  ENTRA_ID_UPN_OVERRIDE  — Use this UPN directly, bypassing {github_login}@{ENTRA_ID_DOMAIN}
                       construction. Useful when GitHub login does not match AAD UPN
                       prefix (e.g. personal GitHub accounts not provisioned via SSO).
 """
@@ -36,6 +45,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -45,10 +55,12 @@ import yaml
 
 try:
     from scripts import fabric_transport
+    from scripts import pr_comment
     from scripts import runner_io
     from scripts import shortcut_seeding_report
 except ImportError:  # invoked as `python3 path/to/fabric_api.py`
     import fabric_transport
+    import pr_comment
     import runner_io
     import shortcut_seeding_report
 
@@ -56,7 +68,27 @@ except ImportError:  # invoked as `python3 path/to/fabric_api.py`
 GITHUB_API = "https://api.github.com"
 ONELAKE_DFS = os.environ.get("ONELAKE_DFS_BASE_URL", "https://onelake.dfs.fabric.microsoft.com")
 
-AAD_DOMAIN_DEFAULT = "eng.acceleratedata.ai"
+ENTRA_ID_DOMAIN_DEFAULT = "eng.acceleratedata.ai"
+
+ENTRA_UPN_MARKER = "<!-- entra-upn:"
+_ENTRA_UPN_RE = re.compile(r"<!--\s*entra-upn:\s*(\S+)\s*-->")
+
+# Placeholder — must equal the login the Domain's GitHub App installation posts
+# under (studio VD-3764, not yet implemented). Never the PR author's own login:
+# any u2m-minted (per-user) credential provides no trust boundary here — see
+# Assumption 1 in the VD-3760 implementation plan.
+TRUSTED_PR_METADATA_AUTHOR = "vibedata-pr-bot"
+
+
+def extract_entra_upn(comment_body: str | None) -> str | None:
+    """Parse the Entra UPN out of a trusted `<!-- entra-upn: {upn} -->` comment body.
+
+    Returns None if `comment_body` is None or the marker is absent/malformed.
+    """
+    if comment_body is None:
+        return None
+    match = _ENTRA_UPN_RE.search(comment_body)
+    return match.group(1) if match else None
 
 
 # ─── Workspace helpers ─────────────────────────────────────────────────────────
@@ -249,22 +281,49 @@ def cmd_cleanup(args):
         sys.exit(1)
 
 
+def resolve_upn(github_login: str, entra_id_domain: str, override: str, metadata_upn: str | None) -> str:
+    """Pure UPN precedence: trusted PR-metadata UPN > ENTRA_ID_UPN_OVERRIDE > constructed.
+
+    `entra_id_domain` must already be resolved by the caller (env var or ENTRA_ID_DOMAIN_DEFAULT).
+    """
+    if metadata_upn:
+        return metadata_upn
+    if override:
+        return override
+    return f"{github_login}@{entra_id_domain}"
+
+
 def cmd_add_contributor(args):
     """Add the PR author as Admin on the ephemeral workspace.
 
     UPN resolution order:
-      1. AAD_UPN_OVERRIDE env var — used as-is (dev/test escape hatch for accounts
+      1. Trusted PR-metadata UPN — a `<!-- entra-upn: {upn} -->` comment posted by
+         TRUSTED_PR_METADATA_AUTHOR (the Domain's GitHub App installation, per
+         studio VD-3764 — NOT the PR-opening per-user credential, which provides
+         no trust boundary since it authenticates as the PR author themselves).
+         A marker-matching comment from any other account is not eligible and is
+         treated as absent.
+      2. ENTRA_ID_UPN_OVERRIDE env var — used as-is (dev/test escape hatch for accounts
          whose GitHub login does not match their AAD UPN prefix, e.g. personal GitHub
          accounts joined via Google OAuth rather than SAML SSO).
-      2. {github_login}@{AAD_DOMAIN} — correct in production where GitHub SAML SSO
+      3. {github_login}@{ENTRA_ID_DOMAIN} — correct in production where GitHub SAML SSO
          enforces that the GitHub login equals the AAD UPN prefix.
     """
-    upn = os.environ.get("AAD_UPN_OVERRIDE", "").strip()
-    if upn:
-        print(f"Using AAD_UPN_OVERRIDE: {upn}", flush=True)
+    comment_body = pr_comment.find_trusted_comment(
+        ENTRA_UPN_MARKER, args.pr_number, args.repo, TRUSTED_PR_METADATA_AUTHOR
+    )
+    metadata_upn = extract_entra_upn(comment_body)
+
+    override = os.environ.get("ENTRA_ID_UPN_OVERRIDE", "").strip()
+    entra_id_domain = os.environ.get("ENTRA_ID_DOMAIN", "").strip() or ENTRA_ID_DOMAIN_DEFAULT
+
+    upn = resolve_upn(args.github_login, entra_id_domain, override, metadata_upn)
+
+    if metadata_upn:
+        print(f"Using trusted PR-metadata UPN: {upn}", flush=True)
+    elif override:
+        print(f"Using ENTRA_ID_UPN_OVERRIDE: {upn}", flush=True)
     else:
-        aad_domain = os.environ.get("AAD_DOMAIN", "").strip() or AAD_DOMAIN_DEFAULT
-        upn = f"{args.github_login}@{aad_domain}"
         print(f"Constructed UPN: {upn}", flush=True)
 
     add_workspace_user(args.workspace_id, upn, role=args.role)
@@ -673,6 +732,8 @@ def main():
     p = sub.add_parser("add-contributor")
     p.add_argument("--workspace-id", required=True)
     p.add_argument("--github-login", required=True)
+    p.add_argument("--pr-number", required=True)
+    p.add_argument("--repo", required=True)
     p.add_argument("--role", choices=["Admin", "Member", "Contributor", "Viewer"], default="Admin")
     p2 = sub.add_parser("upload-file")
     p2.add_argument("--workspace-id", required=True)

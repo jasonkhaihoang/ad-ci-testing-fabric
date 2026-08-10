@@ -40,3 +40,5 @@ VD_DOMAIN_PROD_MANIFEST_SOURCE:
   workflow: publish-prod-manifest.yml
   artifact_name: prod-manifest
   main_branch: main
+
+ENTRA_ID_DOMAIN_VAR: ENTRA_ID_DOMAIN

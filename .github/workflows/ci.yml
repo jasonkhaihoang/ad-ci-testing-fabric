@@ -876,12 +876,14 @@ jobs:
 
       - name: Add PR author as Admin on ephemeral workspace
         env:
-          AAD_DOMAIN: ${{ vars[needs.preflight.outputs.entra_id_domain_var] }}
-          AAD_UPN_OVERRIDE: ${{ secrets.AAD_UPN_OVERRIDE }}
+          ENTRA_ID_DOMAIN: ${{ vars[needs.preflight.outputs.entra_id_domain_var] }}
+          ENTRA_ID_UPN_OVERRIDE: ${{ secrets.ENTRA_ID_UPN_OVERRIDE }}
         run: |
           python3 ${{ env.SCRIPTS }}/fabric_api.py add-contributor \
             --workspace-id "${{ steps.provision.outputs.workspace_id }}" \
             --github-login "${{ github.event.pull_request.user.login }}" \
+            --pr-number "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
             --role Admin
 
       - name: Download prod-state artifact
