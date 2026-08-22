@@ -8,7 +8,9 @@ Logic:
 1. Detect greenfield (`prod-state/source.json.mode == "greenfield"`, or sidecar
    absent) → load `target/manifest.json` and emit shortcuts for every source.*
    node (greenfield = no CI baseline, not no prod data; all sources need shortcuts
-   so Gate 2's full build can resolve {{ source() }} refs).
+   so Gate 2's full build can resolve {{ source() }} refs) — except a source
+   backed by a `dbt seed` in the same project, which has no physical prod
+   location to shortcut from and is materialized locally by the seed itself.
 2. Run `dbt ls --select state:modified+ --resource-type model snapshot
    --state ./prod-state --output json` to identify the build closure.
    Empty result → `[]` and zero_state="no-modified-models".
@@ -33,9 +35,11 @@ import sys
 from typing import List, Optional, Set, Tuple
 
 try:
+    from scripts import runner_io
     from scripts import shortcut_seeding_report
     from scripts.dbt_ls import run_dbt_ls
 except ImportError:  # invoked as `python3 path/to/derive_shortcuts.py`
+    import runner_io
     import shortcut_seeding_report
     from dbt_ls import run_dbt_ls
 
@@ -71,6 +75,13 @@ def _is_non_physical_model(node: dict) -> bool:
         return False
     materialized = (node.get("config") or {}).get("materialized", "")
     return materialized in ("ephemeral", "view")
+
+
+def _is_seed_backed(node: dict, seed_backed_names: Set[str]) -> bool:
+    """True if `node`'s table name is materialized by a same-project `dbt seed`
+    (per Manifest.seed_table_names()) — the single seed-backed-source predicate
+    shared by both the greenfield and incremental derivation paths."""
+    return _node_table_name(node) in seed_backed_names
 
 
 def _shortcut_entry(
@@ -116,11 +127,14 @@ def derive_shortcuts(
     prod = prod_manifest if isinstance(prod_manifest, Manifest) else Manifest.from_dict(prod_manifest)
 
     modified_set = set(modified_unique_ids)
+    seed_backed = cur.seed_table_names()
     all_upstreams: Set[str] = set()
     for mid in modified_unique_ids:
         all_upstreams |= cur.upstreams_of(mid)
 
-    # Filter: drop modified-set members, seeds, views, and ephemeral models.
+    # Filter: drop modified-set members, seeds, views, ephemeral models, and
+    # sources materialized by a same-project seed (parity with the greenfield
+    # branch of main(), which applies the same _is_seed_backed predicate).
     candidates: List[Tuple[str, dict]] = []
     for uid in all_upstreams:
         if uid in modified_set:
@@ -134,6 +148,8 @@ def derive_shortcuts(
         if _is_non_physical_model(node):
             continue
         if not uid.startswith("source."):
+            continue
+        if _is_seed_backed(node, seed_backed):
             continue
         candidates.append((uid, node))
 
@@ -191,8 +207,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     prod_lakehouse_id = os.environ.get("PROD_LAKEHOUSE_ID", "")
 
     if _is_greenfield():
-        manifest_data = _read_json("target/manifest.json") or {}
-        source_items = sorted((manifest_data.get("sources") or {}).items())
+        manifest_data = _read_json(runner_io.target_path("target/manifest.json")) or {}
+        seed_backed = Manifest.from_dict(manifest_data).seed_table_names()
+        source_items = sorted(
+            (uid, node)
+            for uid, node in (manifest_data.get("sources") or {}).items()
+            if not _is_seed_backed(node, seed_backed)
+        )
         schema_enabled = _is_schema_enabled([n for _, n in source_items])
         shortcuts = [
             _shortcut_entry(node, uid, schema_enabled, prod_workspace_id, prod_lakehouse_id)
@@ -208,7 +229,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         _write_report([], "no-modified-models")
         return 0
 
-    current_manifest = Manifest.from_path("target/manifest.json")
+    current_manifest = Manifest.from_path(runner_io.target_path("target/manifest.json"))
     prod_manifest = Manifest.from_path("prod-state/manifest.json")
 
     shortcuts, zero_state = derive_shortcuts(

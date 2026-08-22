@@ -1253,7 +1253,12 @@ def render_gate_2_comment(result, *, run_url: str = "") -> str:
 
 def render_gate_3_comment(result) -> str:
     if not result:
-        return f"{GATE_3_MARKER}\n## Unit Tests (ci/unit-tests) ⚠️\n\n_No data available._\n"
+        return (
+            f"{GATE_3_MARKER}\n"
+            "## Unit Tests (ci/unit-tests) ⏭️ Skipped\n\n"
+            "Isolated Build (ci/run) did not succeed — unit tests require built rows to run against.\n\n"
+            "Fix the ci/run failure and re-push to trigger ci/unit-tests.\n"
+        )
     _, section = render_gate_3(result)
     return f"{GATE_3_MARKER}\n{section}"
 

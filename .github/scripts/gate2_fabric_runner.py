@@ -12,6 +12,7 @@ import subprocess
 import sys
 
 import emit_status
+import runner_io
 from fabric_runner_utils import (
     mat_map_from_manifest as _mat_map_from_manifest,
     select_clone_names as _select_clone_names,
@@ -119,10 +120,29 @@ def cmd_run_gate(args) -> int:
     profiles_dir = args.profiles_dir
 
     subprocess.run(
-        ["dbt", "deps", "--profiles-dir", profiles_dir, "--profile", PROFILE,
+        ["dbt", "deps", "--project-dir", runner_io.project_dir(),
+         "--profiles-dir", profiles_dir, "--profile", PROFILE,
          "--target", TARGET, "--quiet"],
         env=env,
     )
+
+    # AC-78/AC-79: seed before clone/build so a state:modified model's ref()
+    # to a dbt seed resolves. Unconditional — the deployment manifest lists
+    # only models, never seeds, so there is no principled subset to select;
+    # --defer/--state do not apply (seeds have no ref()/source() upstream).
+    # Exit code is not captured into gate-2.json (matches the existing dbt
+    # deps call above) — a seed referenced by a model in this PR's closure
+    # will surface as a build failure downstream; a seed referenced only by
+    # something outside this PR's closure (a snapshot, an unrelated data
+    # test) will not. The print below exists purely so a human scanning the
+    # job log for "why didn't my seed load" has something to find.
+    seed_result = subprocess.run(
+        ["dbt", "seed", "--project-dir", runner_io.project_dir(),
+         "--profiles-dir", profiles_dir, "--profile", PROFILE,
+         "--target", TARGET, "--quiet"],
+        env=env,
+    )
+    print(f"dbt seed exit code: {seed_result.returncode}", flush=True)
 
     clone_run_results: dict | None = None
     build_run_results: dict | None = None
@@ -136,12 +156,13 @@ def cmd_run_gate(args) -> int:
             # Greenfield: no prod manifest → skip clone, run full build directly against source shortcuts
             clone_run_results = {"results": []}
             subprocess.run([
-                "dbt", "run", "--select", select_str,
+                "dbt", "run", "--project-dir", runner_io.project_dir(),
+                "--select", select_str,
                 "--profiles-dir", profiles_dir, "--profile", PROFILE,
                 "--target", TARGET, "--target-path", "target/build",
             ], env=env)
             try:
-                with open("target/build/run_results.json") as f:
+                with open(runner_io.target_path("target/build/run_results.json")) as f:
                     build_run_results = json.load(f)
             except (OSError, json.JSONDecodeError):
                 pass
@@ -152,12 +173,13 @@ def cmd_run_gate(args) -> int:
             # full set, including views, fresh in the ephemeral workspace.
             if clone_names:
                 subprocess.run([
-                    "dbt", "clone", "--select", " ".join(clone_names),
+                    "dbt", "clone", "--project-dir", runner_io.project_dir(),
+                    "--select", " ".join(clone_names),
                     "--profiles-dir", profiles_dir, "--profile", PROFILE,
                     "--target", TARGET, "--target-path", "target/clone",
                 ] + defer_args, env=env)
                 try:
-                    with open("target/clone/run_results.json") as f:
+                    with open(runner_io.target_path("target/clone/run_results.json")) as f:
                         clone_run_results = json.load(f)
                 except (OSError, json.JSONDecodeError):
                     pass
@@ -166,12 +188,13 @@ def cmd_run_gate(args) -> int:
 
             if clone_run_results and _model_rows(clone_run_results)[0] == "pass":
                 subprocess.run([
-                    "dbt", "run", "--select", select_str,
+                    "dbt", "run", "--project-dir", runner_io.project_dir(),
+                    "--select", select_str,
                     "--profiles-dir", profiles_dir, "--profile", PROFILE,
                     "--target", TARGET, "--target-path", "target/build",
                 ] + defer_args, env=env)
                 try:
-                    with open("target/build/run_results.json") as f:
+                    with open(runner_io.target_path("target/build/run_results.json")) as f:
                         build_run_results = json.load(f)
                 except (OSError, json.JSONDecodeError):
                     pass
@@ -179,11 +202,12 @@ def cmd_run_gate(args) -> int:
                 # Build unmodified view models referenced as unit test fixture given
                 # inputs so Gate 3's get_columns_in_relation() can resolve them (VD-2375).
                 view_inputs = _select_unit_test_view_inputs(
-                    "target/build/manifest.json", set(names)
+                    runner_io.target_path("target/build/manifest.json"), set(names)
                 )
                 if view_inputs:
                     subprocess.run([
-                        "dbt", "run", "--select", " ".join(view_inputs),
+                        "dbt", "run", "--project-dir", runner_io.project_dir(),
+                        "--select", " ".join(view_inputs),
                         "--profiles-dir", profiles_dir, "--profile", PROFILE,
                         "--target", TARGET, "--target-path", "target/build",
                     ] + defer_args, env=env)
@@ -193,11 +217,12 @@ def cmd_run_gate(args) -> int:
                 # can resolve them (VD-2377). Uses dbt clone (not dbt run) since these
                 # materializations are clone-eligible.
                 table_inputs = _select_unit_test_table_inputs(
-                    "target/build/manifest.json", set(names)
+                    runner_io.target_path("target/build/manifest.json"), set(names)
                 )
                 if table_inputs:
                     subprocess.run([
-                        "dbt", "clone", "--select", " ".join(table_inputs),
+                        "dbt", "clone", "--project-dir", runner_io.project_dir(),
+                        "--select", " ".join(table_inputs),
                         "--profiles-dir", profiles_dir, "--profile", PROFILE,
                         "--target", TARGET, "--target-path", "target/clone-fixture",
                     ] + defer_args, env=env)
