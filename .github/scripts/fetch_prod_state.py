@@ -2,7 +2,7 @@
 Fetch prod-state/manifest.json for Slim CI deferral (AWAP v1.4 Phase 2).
 
 Modes (from ci-config.yml prod_manifest_source.mode):
-  artifact  — download from latest successful CD run on main via gh CLI (default)
+  artifact  — download the manifests from the fixed-tag CD release via gh CLI (default)
   onelake   — download from OneLake Files path via Fabric UAMI
 
 Falls back to greenfield dbt parse when no manifest is available.
@@ -27,6 +27,9 @@ from typing import NamedTuple
 import ci_config
 import fabric_transport
 import runner_io
+# Same literal the CD publish uploads to — imported rather than restated so the
+# read and write sides cannot drift apart.
+from dbt_docs_publish import RELEASE_TAG
 
 
 ONELAKE_DFS = "https://onelake.dfs.fabric.microsoft.com"
@@ -44,8 +47,9 @@ ONELAKE_DFS = "https://onelake.dfs.fabric.microsoft.com"
 #
 # Categories (artifact mode):
 #   transient — gh CLI non-zero, retryable stderr, network/timeout
-#   config    — missing required key in ci-config.yml
-#   parse     — manifest absent from artifact, or invalid JSON inside it
+#   parse     — manifest absent from the release, or invalid JSON inside it
+# (`config` is onelake-mode-only since VD-4418: artifact mode reads a fixed tag and
+# has no required ci-config.yml key left to be missing.)
 # (`auth` is onelake-mode-only, not reachable in artifact mode which uses the
 # repo `GITHUB_TOKEN` — see §4.2 of the design doc and OnelakeResult below.)
 
@@ -91,71 +95,82 @@ def write_source_json(mode: str, source: str, head_sha: str) -> None:
 
 # ─── Fetch modes ──────────────────────────────────────────────────────────────
 
+def _repo_is_visible(repo: str) -> bool:
+    """Whether the acting token can read `repo` at all.
+
+    Disambiguates the 404 `gh` reports for a genuinely absent release from the 404 it
+    reports for a repo the token cannot see. A non-zero exit here is itself treated as
+    "not visible": if we cannot establish visibility we must not claim greenfield.
+    """
+    probe = subprocess.run(
+        ["gh", "api", f"repos/{repo}", "--silent"], capture_output=True, text=True
+    )
+    return probe.returncode == 0
+
+
 def fetch_artifact_mode(cfg: dict) -> ArtifactResult:
-    """Download manifest from the latest successful CD run on main.
+    """Download the manifests from the fixed-tag CD release.
 
     Returns an ArtifactResult — see ArtifactResult docstring for the three
     possible statuses and category mapping.
+
+    The manifests moved from an Actions artifact to a release asset (VD-4418) so
+    an Intent can read them too: a release asset is repository *contents*, which
+    the brokered agent GitHub token covers, while `gh run download` needs Actions
+    read, which it excludes. The mode keeps the name `artifact` because it is the
+    operator-facing `prod_manifest_source.mode` value and the alternative is
+    still `onelake`; only the transport underneath changed.
     """
-    workflow = cfg.get("workflow", "")
-    artifact_name = cfg.get("artifact_name", "prod-manifest")
-    main_branch = cfg.get("main_branch", "main")
     repo = os.environ.get("REPO", "")
     head_sha = os.environ.get("HEAD_SHA", "")
-
-    if not workflow:
-        reason = "prod_manifest_source.workflow is required for artifact mode."
-        runner_io.error(reason)
-        return ArtifactResult("error", "config", reason)
-
-    result = subprocess.run(
-        [
-            "gh", "run", "list",
-            "--workflow", workflow,
-            "--branch", main_branch,
-            "--status", "success",
-            "--limit", "1",
-            "--json", "databaseId,headSha",
-            "--repo", repo,
-        ],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        reason = f"gh run list failed: {result.stderr.strip() or 'exit ' + str(result.returncode)}"
-        runner_io.warning(reason)
-        return ArtifactResult("error", "transient", reason)
-
-    try:
-        runs = json.loads(result.stdout)
-    except ValueError:
-        reason = "gh run list returned invalid JSON (possible rate-limit or proxy interception)."
-        runner_io.warning(reason)
-        return ArtifactResult("error", "transient", reason)
-
-    if not runs:
-        # The single legitimate greenfield signal: zero successful CD runs ever.
-        runner_io.notice(
-            "No successful CD workflow runs found on main — true greenfield "
-            "(full build)."
-        )
-        return ArtifactResult("greenfield")
-
-    run_id = runs[0]["databaseId"]
-    run_sha = runs[0]["headSha"]
 
     with tempfile.TemporaryDirectory() as tmpdir:
         dl_result = subprocess.run(
             [
-                "gh", "run", "download", str(run_id),
-                "--name", artifact_name,
+                "gh", "release", "download", RELEASE_TAG,
+                # Matches manifest.json and manifest_prod.json, and excludes the
+                # docs asset that shares this release.
+                "--pattern", "manifest*.json",
                 "--dir", tmpdir,
                 "--repo", repo,
             ],
             capture_output=True, text=True,
         )
         if dl_result.returncode != 0:
+            # `gh`'s channel placement for CLI error text is not a documented
+            # contract — check both streams so the greenfield signal below is
+            # not missed if a future `gh` version emits it on stdout.
+            combined_output = f"{dl_result.stdout} {dl_result.stderr}".lower()
+            if "release not found" in combined_output or "no assets match" in combined_output:
+                # Two candidate greenfield signals, replacing "zero successful CD runs
+                # ever": the release has never been cut, or it exists (the docs asset
+                # is there) but carries no manifest yet. A domain's first-ever PR — and
+                # a domain still on a bundle that predates VD-4418 — must reach
+                # greenfield, not a platform error (VD-4402).
+                #
+                # But `gh` prints "release not found" for ANY 404 on the tag lookup,
+                # including a repo the token cannot see and a workflow whose
+                # `permissions:` block lost `contents: read` — both customer-editable.
+                # Treating those as greenfield would silently full-rebuild while
+                # reporting success, which is exactly what AC-14 forbids. The old
+                # implementation had a structural signal (`if not runs:`) that this
+                # wording match replaced, so confirm repo visibility before believing
+                # the 404.
+                if not _repo_is_visible(repo):
+                    reason = (
+                        f"Cannot read repository {repo} — the '{RELEASE_TAG}' release "
+                        "lookup 404'd and so did the repository itself, so this is a "
+                        "permission or visibility failure, not a missing release."
+                    )
+                    runner_io.warning(reason)
+                    return ArtifactResult("error", "auth", reason)
+                runner_io.notice(
+                    "No prod manifest published on the CD release — true "
+                    "greenfield (full build)."
+                )
+                return ArtifactResult("greenfield")
             reason = (
-                f"gh run download failed for run {run_id}: "
+                f"gh release download failed for tag {RELEASE_TAG}: "
                 f"{dl_result.stderr.strip() or 'exit ' + str(dl_result.returncode)}"
             )
             runner_io.warning(reason)
@@ -163,9 +178,10 @@ def fetch_artifact_mode(cfg: dict) -> ArtifactResult:
 
         manifest_src = os.path.join(tmpdir, "manifest.json")
         if not os.path.exists(manifest_src):
+            # A release carrying manifest_prod.json but not manifest.json is a
+            # malformed publish, not greenfield — never collapse it to one.
             reason = (
-                f"manifest.json not found in artifact '{artifact_name}' "
-                f"(run {run_id})."
+                f"manifest.json not found among the '{RELEASE_TAG}' release assets."
             )
             runner_io.warning(reason)
             return ArtifactResult("error", "parse", reason)
@@ -176,7 +192,9 @@ def fetch_artifact_mode(cfg: dict) -> ArtifactResult:
             with open(manifest_src) as f:
                 json.load(f)
         except (ValueError, OSError) as e:
-            reason = f"manifest.json in artifact '{artifact_name}' is not valid JSON: {e}"
+            reason = (
+                f"manifest.json on the '{RELEASE_TAG}' release is not valid JSON: {e}"
+            )
             runner_io.warning(reason)
             return ArtifactResult("error", "parse", reason)
 
@@ -187,12 +205,14 @@ def fetch_artifact_mode(cfg: dict) -> ArtifactResult:
         if os.path.exists(manifest_prod_src):
             shutil.copy2(manifest_prod_src, "prod-state/manifest_prod.json")
 
+    # The release is clobbered in place on every publish, so it has no run id or
+    # per-publish SHA to cite — the tag is the whole provenance.
     write_source_json(
         mode="artifact",
-        source=f"{repo}/runs/{run_id} (SHA {run_sha[:8]})",
+        source=f"{repo} release {RELEASE_TAG}",
         head_sha=head_sha,
     )
-    print(f"Artifact manifest fetched from run {run_id} (SHA {run_sha[:8]}).", flush=True)
+    print(f"Prod manifest fetched from the '{RELEASE_TAG}' release.", flush=True)
     return ArtifactResult("success")
 
 
@@ -291,7 +311,8 @@ def fetch_greenfield() -> None:
 
     # Diagnostic only: surface project-level errors. Output NOT used as prod manifest.
     deps = subprocess.run(
-        ["dbt", "deps", "--profiles-dir", ".github/profiles", "--target", "dbt_quality"],
+        ["dbt", "deps", "--project-dir", runner_io.project_dir(),
+         "--profiles-dir", ".github/profiles", "--target", "dbt_quality"],
         capture_output=True, text=True,
     )
     if deps.returncode != 0:
@@ -304,6 +325,7 @@ def fetch_greenfield() -> None:
     parse = subprocess.run(
         [
             "dbt", "parse",
+            "--project-dir", runner_io.project_dir(),
             "--profiles-dir", ".github/profiles",
             "--target", "dbt_quality",
             "--exclude", "package:elementary",

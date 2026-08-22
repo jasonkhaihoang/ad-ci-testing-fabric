@@ -13,6 +13,7 @@ except ImportError:
     yaml = None
 
 import emit_status
+import runner_io
 from fabric_runner_utils import select_names as _select_names, setup_defer as _setup_defer, write_gate_result as _write_gate_result
 from parse_run_results import check_store_failures_config, enrich_tests_from_manifest, parse_data_test_results
 
@@ -52,7 +53,8 @@ def _load_dbt_project(path: str) -> dict:
 
 def cmd_run_gate(args) -> int:
     head_sha = args.head_sha
-    dbt_project = _load_dbt_project(args.dbt_project)
+    dbt_project_path = args.dbt_project or runner_io.target_path("dbt_project.yml")
+    dbt_project = _load_dbt_project(dbt_project_path)
     store_failures_config_ok = check_store_failures_config(dbt_project)
     if not store_failures_config_ok:
         print("Advisory: dbt_project.yml missing store_failures config. Gate unaffected.", flush=True)
@@ -74,13 +76,15 @@ def cmd_run_gate(args) -> int:
     names = _select_names(args.deployment_manifest)
 
     subprocess.run(
-        ["dbt", "deps", "--profiles-dir", profiles_dir, "--profile", PROFILE,
+        ["dbt", "deps", "--project-dir", runner_io.project_dir(),
+         "--profiles-dir", profiles_dir, "--profile", PROFILE,
          "--target", TARGET, "--quiet"],
         env=env,
     )
 
     cmd = [
-        "dbt", "test", "--store-failures",
+        "dbt", "test", "--project-dir", runner_io.project_dir(),
+        "--store-failures",
         "--profiles-dir", profiles_dir, "--profile", PROFILE,
         "--target", TARGET, "--target-path", "target/data-test",
         "--exclude", "test_type:unit",
@@ -91,14 +95,14 @@ def cmd_run_gate(args) -> int:
 
     run_results: dict | None = None
     try:
-        with open("target/data-test/run_results.json") as f:
+        with open(runner_io.target_path("target/data-test/run_results.json")) as f:
             run_results = json.load(f)
     except (OSError, json.JSONDecodeError):
         _post(head_sha, "failure", "Gate 4: run_results.json missing or malformed")
         return 1
 
     summary = parse_data_test_results(run_results)
-    manifest_nodes = _load_manifest_nodes("target/data-test/manifest.json")
+    manifest_nodes = _load_manifest_nodes(runner_io.target_path("target/data-test/manifest.json"))
     summary["tests"] = enrich_tests_from_manifest(summary["tests"], manifest_nodes)
     summary["store_failures_config_ok"] = store_failures_config_ok
     summary.update({"gate": "4", "head_sha": head_sha})
@@ -127,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--head-sha", required=True)
     p.add_argument("--deployment-manifest", required=True)
     p.add_argument("--prod-state-dir", default="prod-state")
-    p.add_argument("--dbt-project", default="dbt_project.yml")
+    p.add_argument("--dbt-project", default=None)
     p.add_argument("--profiles-dir", default=".github/profiles")
     p.add_argument("--output", default=None)
     args = parser.parse_args(argv)

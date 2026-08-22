@@ -30,9 +30,10 @@ def _make_dbt_ls_cmd(selector: str) -> list[str]:
     target = os.environ.get("DBT_COMPILE_TARGET", "dbt_fabric_compile")
     cmd = [
         "dbt", "ls",
+        "--project-dir", os.environ.get("PROJ", "."),
         "--select", selector,
         "--resource-type", "model", "snapshot",
-        "--state", "./prod-state",
+        "--state", os.path.abspath("prod-state"),
         "--output", "json",
         "--profiles-dir", ".github/profiles",
     ]

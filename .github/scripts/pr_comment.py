@@ -109,3 +109,33 @@ def _fetch_all_comments(pr_number: str, repo: str) -> list[dict]:
 def find_trusted_comment(marker: str, pr_number: str, repo: str, trusted_author: str) -> str | None:
     """Fetch all PR comments and return the trusted match for `marker`, or None."""
     return select_trusted_comment(_fetch_all_comments(pr_number, repo), marker, trusted_author)
+
+
+def post_gate_comment(report_path, render_fn, marker, pr_number, repo, real_work_result=None):
+    """Load a gate's report JSON (if present) and upsert its PR comment.
+
+    `real_work_result` is the comment job's own `needs.<real-work-job>.result`
+    string ('success' | 'failure' | 'skipped' | 'cancelled'). When the report
+    is missing AND real_work_result == 'failure', the real-work job crashed
+    before it could upload a report — a distinct case from a clean upstream
+    skip, so it renders a dedicated error message instead of calling
+    render_fn(None) (which would otherwise silently reuse the "Skipped"
+    wording for a genuine in-job crash).
+    """
+    result = None
+    try:
+        with open(report_path) as f:
+            result = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    if result is None and real_work_result == "failure":
+        body = (
+            f"{marker}\n## ⚠️ Gate error\n\n"
+            "The gate job failed before it could produce a report — check "
+            "the workflow run logs for the underlying error.\n"
+        )
+    else:
+        body = render_fn(result)
+
+    upsert(marker, body, pr_number, repo)

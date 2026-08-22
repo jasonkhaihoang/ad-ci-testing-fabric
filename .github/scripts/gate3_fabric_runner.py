@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 import emit_status
+import runner_io
 from fabric_runner_utils import select_names as _select_names, setup_defer as _setup_defer, write_gate_result as _write_gate_result
 from parse_run_results import summarize
 
@@ -46,7 +47,8 @@ def cmd_run_gate(args) -> int:
     defer_args = _setup_defer(args.prod_state_dir)
 
     subprocess.run(
-        ["dbt", "deps", "--profiles-dir", profiles_dir, "--profile", PROFILE,
+        ["dbt", "deps", "--project-dir", runner_io.project_dir(),
+         "--profiles-dir", profiles_dir, "--profile", PROFILE,
          "--target", TARGET, "--quiet"],
         env=env,
     )
@@ -62,14 +64,15 @@ def cmd_run_gate(args) -> int:
         # of that model with unit tests — mirrors the notebook's selector pattern.
         select_arg = " ".join(f"{n},test_type:unit" for n in names)
         subprocess.run([
-            "dbt", "test", "--select", select_arg,
+            "dbt", "test", "--project-dir", runner_io.project_dir(),
+            "--select", select_arg,
             "--profiles-dir", profiles_dir, "--profile", PROFILE,
             "--target", TARGET, "--target-path", "target/unit",
         ] + defer_args, env=env)
 
         run_results: dict | None = None
         try:
-            with open("target/unit/run_results.json") as f:
+            with open(runner_io.target_path("target/unit/run_results.json")) as f:
                 run_results = json.load(f)
         except (OSError, json.JSONDecodeError):
             pass
