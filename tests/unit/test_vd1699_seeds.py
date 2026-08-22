@@ -1,6 +1,7 @@
 import csv
-import yaml
 from pathlib import Path
+
+import yaml
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 SEEDS_RAW = REPO_ROOT / "seeds" / "raw"
